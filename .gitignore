@@ -1,0 +1,16 @@
+# 音声データ（リポジトリに入れない）
+*.wav
+*.mp3
+*.flac
+*.aif
+*.aiff
+*.m4a
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Node
+node_modules/
+dist/
+# OS
+.DS_Store
