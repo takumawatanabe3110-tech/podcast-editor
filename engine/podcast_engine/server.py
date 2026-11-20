@@ -6,6 +6,8 @@
 - GET  /api/transcript       文字起こし（.transcript.json）。なければ 404
 - GET  /api/peaks/{素材ID}   波形の形（ファイル内の時刻で 1/PEAK_RATE 秒ごとの最小・最大）
 - GET  /api/audio/{素材ID}   試聴用の音（24kHz・16bit WAV。声はノイズ除去済み）
+- POST /api/export           書き出しを裏で始める（.mp3 / .wav）。同時には1つだけ
+- GET  /api/export           書き出しの状況（idle / running / done / error）
 重い処理（ノイズ除去・波形・試聴用の音）は .podcache/ に保存して使い回す。
 再生・音量・カットはブラウザの中で、その場で行う。
 """
@@ -13,7 +15,11 @@
 from __future__ import annotations
 
 import hashlib
+import dataclasses
 import json
+import math
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +34,25 @@ PEAK_RATE = 50  # 波形の細かさ（1秒あたりの点の数）
 UI_DIST = Path(__file__).resolve().parents[2] / "ui" / "dist"
 
 
+def export(project: Project, base_dir: str | Path, out_path: str | Path):
+    """書き出す（レンダリング→ファイル→MP3 は測り直し）。RenderReport を返す。cmd_render と共用。"""
+    from .render import render, write
+
+    audio, rep = render(project, Path(base_dir))
+    measured = write(
+        out_path, audio, rep.sample_rate, project.output.mp3_kbps,
+        project.output.loudness_lufs, project.output.true_peak_dbtp,
+    )
+    if measured is not None:  # MP3 は書いた後に測り直した値を使う
+        rep.loudness_lufs, rep.true_peak_dbtp = measured
+    return rep
+
+
+def _num(x):
+    """JSON に入れられない inf / nan を null にする。"""
+    return None if isinstance(x, float) and not math.isfinite(x) else x
+
+
 def _key(path: Path, extra: str = "") -> str:
     st = path.stat()
     return hashlib.sha256(f"{path.resolve()}|{st.st_size}|{st.st_mtime}|{extra}".encode()).hexdigest()[:16]
@@ -40,6 +65,8 @@ class Workspace:
         self.path = Path(project_path).resolve()
         self.base = self.path.parent
         self.cache = self.base / CACHE_DIR
+        self._export_lock = threading.Lock()
+        self._export: dict = {"state": "idle"}  # 書き出しの状況（ロックして読み書きする）
 
     def load(self) -> Project:
         return Project.load(self.path)
@@ -56,6 +83,40 @@ class Workspace:
 
             return denoised_path(src, voice.denoise, self.cache)
         return src
+
+    # ---- 書き出し（裏のスレッド）
+
+    def default_export_path(self) -> Path:
+        return self.path.with_suffix(".mp3")
+
+    def start_export(self, out: Path) -> bool:
+        """書き出しを始める。すでに実行中なら False。"""
+        with self._export_lock:
+            if self._export["state"] == "running":
+                return False
+            started = time.time()
+            self._export = {"state": "running", "path": str(out), "started": started}
+        threading.Thread(target=self._run_export, args=(out, started), daemon=True).start()
+        return True
+
+    def _run_export(self, out: Path, started: float) -> None:
+        try:
+            rep = export(self.load(), self.base, out)  # 開始時にディスクから読む
+            res = {
+                "state": "done", "path": str(out), "elapsed": time.time() - started,
+                "report": {k: _num(v) for k, v in dataclasses.asdict(rep).items()},
+            }
+        except Exception as e:  # 失敗は状況に入れて画面に見せる
+            res = {"state": "error", "path": str(out), "message": f"書き出しに失敗しました：{type(e).__name__}: {e}"}
+        with self._export_lock:
+            self._export = res
+
+    def export_status(self) -> dict:
+        with self._export_lock:
+            st = dict(self._export)
+        if st["state"] == "running":
+            st["elapsed"] = time.time() - st["started"]
+        return st
 
     # ---- 計算済みの値
 
@@ -190,6 +251,35 @@ def create_app(project_path: str | Path):
     @app.get("/api/audio/{sid}")
     def get_audio(sid: str):
         return FileResponse(ws.preview_audio(project_or_404(sid), sid), media_type="audio/wav")
+
+    @app.post("/api/export")
+    def post_export(data: Optional[dict] = Body(None)):
+        raw = (data or {}).get("path")
+        if raw is not None and not isinstance(raw, str):
+            raise HTTPException(400, "path は文字列で指定してください")
+        out = Path(raw).expanduser() if raw else ws.default_export_path()
+        if not out.is_absolute():
+            out = ws.base / out  # 相対パスは .podproj のフォルダから
+        if out.suffix.lower() not in (".mp3", ".wav"):
+            raise HTTPException(400, "書き出せるのは .mp3 か .wav です")
+        if not out.parent.is_dir():
+            raise HTTPException(400, f"保存先のフォルダがありません：{out.parent}")
+        if not ws.start_export(out):
+            raise HTTPException(409, "いま書き出し中です。終わるまでお待ちください")
+        return {"state": "running", "path": str(out)}
+
+    @app.get("/api/export")
+    def get_export():
+        return ws.export_status()
+
+    @app.middleware("http")
+    async def no_stale_page(request, call_next):
+        # 画面の入口（index.html）と API は毎回確かめさせる。古い画面のまま開くのを防ぐ。
+        # assets/ のファイルは名前に中身の印が入るので、覚えさせてよい
+        res = await call_next(request)
+        if not request.url.path.startswith("/assets/"):
+            res.headers["Cache-Control"] = "no-cache"
+        return res
 
     if UI_DIST.exists():
         app.mount("/", StaticFiles(directory=str(UI_DIST), html=True), name="ui")

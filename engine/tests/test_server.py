@@ -1,4 +1,7 @@
 import io
+import math
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -82,3 +85,83 @@ def test_peaks_and_preview_audio(client):
     assert len(x) / fs == pytest.approx(3.0, abs=0.01)
     assert list((tmp / ".podcache").glob("bgm.preview-*.wav"))  # キャッシュされる
     assert c.get("/api/audio/nope").status_code == 404
+
+
+def _wait_export(c, timeout=60):
+    end = time.time() + timeout
+    while time.time() < end:
+        st = c.get("/api/export").json()
+        if st["state"] in ("done", "error"):
+            return st
+        time.sleep(0.2)
+    raise AssertionError("書き出しが終わりません")
+
+
+def test_export_idle_at_first(client):
+    c, _ = client
+    assert c.get("/api/export").json() == {"state": "idle"}
+
+
+@pytest.mark.parametrize("ext", ["wav", "mp3"])
+def test_export_file(client, ext):
+    c, tmp = client
+    r = c.post("/api/export", json={"path": f"out.{ext}"})  # 相対パスは .podproj のフォルダから
+    assert r.status_code == 200
+    assert r.json() == {"state": "running", "path": str(tmp.resolve() / f"out.{ext}")}
+    st = _wait_export(c)
+    assert st["state"] == "done", st
+    assert (tmp / f"out.{ext}").stat().st_size > 0
+    rep = st["report"]
+    assert set(rep) == {"duration", "sample_rate", "peak_dbfs", "clipped",
+                        "loudness_before_lufs", "loudness_lufs", "true_peak_dbtp"}
+    assert rep["duration"] > 3.0  # 頭の余白1秒 + 声3秒（+ BGM）
+    assert math.isfinite(rep["loudness_lufs"])
+    assert abs(rep["loudness_lufs"] - (-14.0)) < 0.5
+    assert st["elapsed"] >= 0
+
+
+def test_export_default_path_is_mp3_next_to_project(client):
+    c, tmp = client
+    assert c.post("/api/export").json()["path"] == str(tmp.resolve() / "ep.mp3")
+    assert _wait_export(c)["state"] == "done"
+    assert (tmp / "ep.mp3").exists()
+
+
+def test_export_bad_extension(client):
+    c, _ = client
+    assert c.post("/api/export", json={"path": "out.flac"}).status_code == 400
+    assert c.get("/api/export").json() == {"state": "idle"}
+
+
+def test_export_conflict_while_running(client, monkeypatch):
+    import podcast_engine.server as server
+
+    c, tmp = client
+    gate = threading.Event()
+    from podcast_engine.render import RenderReport
+
+    def slow_export(p, base, out):
+        gate.wait(30)  # 合図が来るまで書き出し中のまま
+        return RenderReport(1.0, 48000, -6.0, False)
+
+    monkeypatch.setattr(server, "export", slow_export)
+    assert c.post("/api/export", json={"path": "a.wav"}).status_code == 200
+    st = c.get("/api/export").json()
+    assert st["state"] == "running" and "started" in st and "elapsed" in st
+    r = c.post("/api/export", json={"path": "b.wav"})
+    assert r.status_code == 409 and "書き出し中" in r.json()["detail"]
+    gate.set()
+    assert _wait_export(c)["state"] in ("done", "error")
+
+
+def test_export_error_is_reported(client):
+    c, tmp = client
+    (tmp / "a.wav").unlink()  # 素材がない
+    assert c.post("/api/export", json={"path": "x.wav"}).status_code == 200
+    st = _wait_export(c)
+    assert st["state"] == "error" and "書き出しに失敗" in st["message"]
+
+
+def test_page_is_not_cached(client):
+    c, _ = client
+    assert c.get("/api/project").headers["cache-control"] == "no-cache"

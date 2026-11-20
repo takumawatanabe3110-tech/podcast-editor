@@ -21,7 +21,11 @@ npx vitest run     # テスト
 - `src/App.tsx`：全体。読み込み・保存・キー操作（Space、⌘Z など）
 - `src/ScriptPanel.tsx`：台本（行のクリック・選んでカット・文字の修正）
 - `src/TrackView.tsx`：全体バー・波形・ルビ・BGM の音量カーブ
-- `src/player.ts`：Web Audio による再生（カット・音量・パン・BGM）
+- `src/player.ts`：Web Audio による再生（カット・音量・パン・BGM。トラックの音量をその場で変える・メーター・ソロ・範囲の試聴）
+- `src/Mixer.tsx`：ミキサー・書き出しの結果
+- `src/layout.tsx`：欄の広さ（境目のドラッグ・台本の開け閉め）。ブラウザに覚えさせる
+- `src/BgmView.tsx`：②BGM 画面
+- `src/bgmops.ts`：BGM の点・始まり・切る位置・フェードの計算
 - `src/timeline.ts`：時刻の計算。エンジンの `project.py`／`render.py` と同じ結果になるようにしている
 - `src/editops.ts`：台本からのカットと、カットの取り消し（復元）
 - `src/types.ts`：.podproj と文字起こし（.transcript.json）の形

@@ -1,4 +1,5 @@
-// 台本：クリックで移動して文字を直す。ドラッグ・Shift・⌘クリックで複数選んでカット。カット済みの行はクリックで戻す。
+// 台本：文をクリックで移動して文字を直す。時刻のクリック（Shift で範囲・⌘ で追加）やドラッグで選んで Delete でカット。
+// カット済みの行はクリックで戻す。
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { lineTime } from './editops'
 import type { Player } from './player'
@@ -12,7 +13,6 @@ interface Props {
   onSeekRef: (t: number) => void
   onEditText: (line: number, text: string) => void
   onRestore: (line: number) => void
-  onCut: () => void
 }
 
 export function ScriptPanel(p: Props) {
@@ -74,18 +74,25 @@ export function ScriptPanel(p: Props) {
     setEditing(i)
   }
 
+  // 時刻のクリック：その文を選んで、そこへ移動（Delete でカットできる）
+  const onTime = (e: React.MouseEvent, i: number) => {
+    setEditing(null)
+    if (e.shiftKey && p.selected.length) p.setSelected(range(p.selected[0], i))
+    else if (e.metaKey || e.ctrlKey) p.setSelected(p.selected.includes(i) ? p.selected.filter(k => k !== i) : [...p.selected, i])
+    else { p.setSelected(p.selected.length === 1 && p.selected[0] === i ? [] : [i]); p.onSeekRef(p.lines[i].start) }
+  }
+
   const q = query.trim()
   return (
     <aside className="aside">
       <div className="aside-head">
-        <h2>台本 <span className="hint">（フィラーなし・{p.lines.length}発言）</span></h2>
         <input className="search" type="search" placeholder="台本を検索" aria-label="台本を検索" value={query} onChange={e => setQuery(e.target.value)} />
       </div>
       <div className="lines" ref={listRef}>
         {p.lines.map((u, i) => (q && !u.script.includes(q)) ? null : (
           <Line key={i} i={i} u={u} color={p.colors[u.source] ?? '#888'} cut={isCut(segs, u.start, u.end)}
             now={i === now} playing={playing} sel={p.selected.includes(i)} editing={editing === i}
-            onDown={onDown} onEnter={onEnter} onUp={onUp} onTime={() => p.onSeekRef(u.start)}
+            onDown={onDown} onEnter={onEnter} onUp={onUp} onTime={onTime}
             onDone={text => {
               setEditing(null)
               // 編集を終えたら選択も外す（青いまま残らないように）
@@ -94,16 +101,6 @@ export function ScriptPanel(p: Props) {
             }} />
         ))}
       </div>
-      <div className="aside-foot">
-        <div className="hint" style={{ lineHeight: 1.7 }}>
-          文をクリック：そこへ移動して文字を直す（音声は変わりません）<br />
-          ドラッグ・Shift・⌘クリックで複数選択 → カット（Delete キーでも）。カット済みの文はクリックで戻す
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="btn danger" disabled={!p.selected.length} onClick={p.onCut}>選んだ文をカット（{p.selected.length}）</button>
-          <button className="btn" disabled={!p.selected.length} onClick={() => p.setSelected([])}>選択を外す</button>
-        </div>
-      </div>
     </aside>
   )
 }
@@ -111,18 +108,18 @@ export function ScriptPanel(p: Props) {
 interface LineProps {
   i: number; u: Utterance; color: string; cut: boolean; now: boolean; playing: boolean; sel: boolean; editing: boolean
   onDown: (e: React.MouseEvent, i: number) => void; onEnter: (i: number) => void; onUp: (e: React.MouseEvent, i: number) => void
-  onTime: () => void; onDone: (text: string | null) => void
+  onTime: (e: React.MouseEvent, i: number) => void; onDone: (text: string | null) => void
 }
 
 const Line = memo(function Line({ i, u, color, cut, now, playing, sel, editing, onDown, onEnter, onUp, onTime, onDone }: LineProps) {
   const cls = ['line', cut && 'cut', now && 'now', now && playing && 'playing', sel && 'sel'].filter(Boolean).join(' ')
   return (
     <div className={cls} data-i={i} onMouseDown={e => onDown(e, i)} onMouseEnter={() => onEnter(i)} onMouseUp={e => onUp(e, i)}>
-      <button className="time mono" aria-label={`${formatTime(lineTime(u))} へ移動`}
-        onMouseDown={e => e.stopPropagation()} onMouseUp={e => e.stopPropagation()} onClick={onTime}>{formatTime(lineTime(u))}</button>
+      <button className="time mono" aria-label={`${formatTime(lineTime(u))} の文を選ぶ`} aria-pressed={sel} title="クリックで選ぶ（Delete でカット）"
+        onMouseDown={e => { e.stopPropagation(); if (e.shiftKey) e.preventDefault() }} onMouseUp={e => e.stopPropagation()} onClick={e => onTime(e, i)}>{formatTime(lineTime(u))}</button>
       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
         <div className="who"><span className="dot" style={{ background: color }} />{u.speaker}
-          {cut && <span className="tag cut">カット済み・クリックで戻す</span>}</div>
+          {cut && <span className="tag cut" title="クリックで戻す">カット済み</span>}</div>
         {editing ? <Editor initial={u.script} onDone={onDone} /> : <div className="text">{u.script}</div>}
       </div>
     </div>
@@ -152,7 +149,6 @@ function Editor({ initial, onDone }: { initial: string; onDone: (t: string | nul
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finish(text.replace(/\n/g, '')) }
           else if (e.key === 'Escape') { e.preventDefault(); finish(null) }
         }} />
-      <span className="hint">Enter で確定 ・ Esc で取り消し ・ 文字を直しても音声は変わりません</span>
     </label>
   )
 }

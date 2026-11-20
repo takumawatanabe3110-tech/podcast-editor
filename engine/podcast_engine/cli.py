@@ -184,17 +184,11 @@ def cmd_transcribe(args) -> int:
 
 
 def cmd_render(args) -> int:
-    from .render import render, write
+    from .server import export
 
     p = Project.load(args.project)
     base = Path(args.project).resolve().parent
-    audio, rep = render(p, base)
-    measured = write(
-        args.out, audio, rep.sample_rate, p.output.mp3_kbps,
-        p.output.loudness_lufs, p.output.true_peak_dbtp,
-    )
-    if measured is not None:  # MP3 は書いた後に測り直した値を表示する
-        rep.loudness_lufs, rep.true_peak_dbtp = measured
+    rep = export(p, base, args.out)
     msg = f"{args.out} に書き出しました（{rep.duration:.1f} 秒、ピーク {rep.peak_dbfs:+.1f} dBFS）"
     if rep.loudness_lufs is not None:
         msg += (

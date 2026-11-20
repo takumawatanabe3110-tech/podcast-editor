@@ -33,3 +33,8 @@ export const getAudio = (sid: string) =>
     if (!r.ok) throw new Error(`音声 ${sid} を読めません（${r.status}）`)
     return r.arrayBuffer()
   })
+
+export const startExport = () =>
+  fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => json<{ state: string; path: string }>(r))
+
+export const getExport = () => fetch('/api/export').then(r => json<import('./Mixer').ExportStatus>(r))

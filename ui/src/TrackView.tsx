@@ -1,6 +1,7 @@
 // 全体バー（出力時刻）と、トラックごとの波形・ルビ（基準時刻）。
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { refToOutOrNext } from './editops'
+import { scrubHandler } from './layout'
 import type { Player } from './player'
 import { usePlayhead } from './playhead'
 import { bgmGainAt, bgmStart, fileTime, formatTime, layout, outToRef, rulerTicks } from './timeline'
@@ -44,13 +45,6 @@ export function Overview({ project, player, view, total }: { project: Project; p
   const v1 = refToOutOrNext(project.edit, view.start + view.span)
   return (
     <div className="overview">
-      <div className="legend">
-        <span>全体（出力時刻・クリックで移動）</span>
-        <span style={{ display: 'inline-flex', gap: 14 }}>
-          <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: 'var(--bgm)', marginRight: 6 }} />BGM</span>
-          <span><span style={{ display: 'inline-block', width: 2, height: 12, background: 'var(--cut-line)', marginRight: 6 }} />カット</span>
-        </span>
-      </div>
       <div ref={ref} className="ov" role="slider" aria-label="全体の再生位置" aria-valuemin={0} aria-valuemax={len} aria-valuenow={player.position()}
         onClick={e => { const r = e.currentTarget.getBoundingClientRect(); player.seek(((e.clientX - r.left) / r.width) * len) }}>
         {project.bgm.map((c, i) => {
@@ -146,12 +140,23 @@ export function Tracks(p: TracksProps) {
     p.player.seek(refToOutOrNext(project.edit, t))
   }
   usePinchZoom(boxRef, ref, p)
+  // 波形の高さは欄の広さに合わせる（ミキサーの境目をドラッグすると伸び縮みする）
+  const [boxH, setBoxH] = useState(0)
+  useLayoutEffect(() => {
+    const el = boxRef.current?.parentElement
+    if (!el) return
+    const ro = new ResizeObserver(() => setBoxH(el.clientHeight))
+    ro.observe(el); setBoxH(el.clientHeight)
+    return () => ro.disconnect()
+  }, [])
+  const laneH = Math.max(70, Math.floor((boxH - 22 - 52 - 40 - 8 * (project.voices.length + 1)) / Math.max(1, project.voices.length)))
   return (
     <div className="tracks" ref={boxRef}>
       <Follow {...p} />
       <div className="trow">
-        <div className="hint" style={{ alignSelf: 'end' }}>基準時刻</div>
-        <div ref={ref} className="ruler">
+        <div />
+        <div ref={ref} className="ruler seekable" title="クリック・ドラッグで再生位置を移す"
+          onPointerDown={scrubHandler(f => p.player.seek(refToOutOrNext(project.edit, view.start + f * view.span)))}>
           {w > 0 && ticks.map(t => <div key={t} style={{ left: x(t) }}><span className="mono">{formatTime(t, step < 1 ? 1 : 0)}</span></div>)}
           {w > 0 && gaps.filter(([a, b]) => b > view.start && a < view.start + view.span).map(([a, b]) => (
             <div key={a} style={{ left: Math.max(0, x(a)), width: Math.min(w, x(b)) - Math.max(0, x(a)), top: 1, bottom: 'auto', height: 16, background: '#3A2226', borderRadius: 4, overflow: 'hidden', textAlign: 'center', color: '#FFC2C2', whiteSpace: 'nowrap' }}>
@@ -165,8 +170,8 @@ export function Tracks(p: TracksProps) {
             <b><span className="dot" style={{ width: 10, height: 10, borderRadius: '50%', background: p.colors[i] }} />{v.name || v.source}</b>
             <small>{v.denoise ? 'ノイズ除去 ・ ' : ''}{v.gain_db >= 0 ? '+' : ''}{v.gain_db.toFixed(1)} dB{v.mute ? ' ・ ミュート' : ''}</small>
           </div>
-          <div className="lane" style={{ height: 128 }} onClick={seekAt}>
-            <Wave peaks={p.peaks[v.source]} project={project} sid={v.source} view={view} width={w} color={p.colors[i]} gaps={gaps} top={p.showRuby ? 30 : 4} />
+          <div className="lane" style={{ height: laneH }} onClick={seekAt}>
+            <Wave key={laneH} peaks={p.peaks[v.source]} project={project} sid={v.source} view={view} width={w} color={p.colors[i]} gaps={gaps} top={p.showRuby ? 30 : 4} />
             {p.showRuby && <Ruby utterances={p.utterances} sid={v.source} view={view} width={w} />}
             <PlayLine player={p.player} project={project} view={view} width={w} />
           </div>
@@ -174,7 +179,7 @@ export function Tracks(p: TracksProps) {
       ))}
       <div className="trow">
         <div className="tlabel"><b><span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--bgm)' }} />BGM</b>
-          <small>{project.bgm.length ? project.bgm.map(c => c.source).join('・') : 'なし'}（編集は次の段階）</small></div>
+          <small>{project.bgm.length ? project.bgm.map(c => c.source).join('・') : 'なし'}</small></div>
         <div className="lane" style={{ height: 52 }} onClick={seekAt}>
           <BgmLane project={project} view={view} width={w} />
           <PlayLine player={p.player} project={project} view={view} width={w} />

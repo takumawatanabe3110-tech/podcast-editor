@@ -82,3 +82,95 @@ button { font-family: inherit; color: inherit; }
 
 .center { height: 100%; display: grid; place-items: center; color: var(--sub); text-align: center; line-height: 1.8; }
 .error { color: #FFB3B3; white-space: pre-wrap; }
+
+/* ---- ミキサー */
+.mixer { border-top: 1px solid var(--line); background: var(--panel); padding: 14px 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; }
+.mixcard { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.strip { flex: 0 0 156px; }
+.sname { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.sname .dot { width: 10px; height: 10px; border-radius: 50%; }
+.schips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px; }
+.schips span { padding: 2px 6px; border-radius: 4px; background: #2A2E36; color: #C9CFD6; font-size: 11px; }
+.sbody { display: flex; gap: 10px; align-items: stretch; height: 120px; }
+.meter { position: relative; width: 8px; background: #2A2E36; border-radius: 3px; overflow: hidden; }
+.mbar { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: #5FD39A; }
+.mhold { position: absolute; left: 0; right: 0; height: 2px; background: #fff; opacity: 0; }
+.fader { writing-mode: vertical-lr; direction: rtl; width: 24px; height: 120px; margin: 0; accent-color: #D5DAE0; cursor: ns-resize; }
+.sval { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sval input { width: 64px; height: 30px; padding: 0 6px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: 15px 'SF Mono', Menlo, monospace; }
+.ms { display: flex; gap: 6px; }
+.msbtn { height: 30px; width: 36px; background: var(--btn); color: var(--sub); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.msbtn.on-m { background: #6B3238; color: #FFD0D0; border-color: #A04850; }
+.msbtn.on-s { background: #6B5A1E; color: #FFF0B3; border-color: #A08A30; }
+.export { flex: 1 1 260px; }
+.export .row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--sub); flex-wrap: wrap; }
+.export .row input { width: 72px; height: 30px; padding: 0 6px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: 14px 'SF Mono', Menlo, monospace; }
+.grid2 { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; color: var(--sub); }
+.grid2 span:nth-child(2n) { color: var(--text); }
+.done { display: flex; flex-direction: column; gap: 6px; }
+.btn.primary { background: var(--accent); color: #fff; border: none; font-weight: 700; }
+.tabs { display: inline-flex; background: var(--btn); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.tabs button { height: 32px; padding: 0 14px; border: none; border-radius: 6px; background: transparent; color: var(--sub); font-size: 13px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: #3A404B; color: #fff; }
+
+/* ---- BGM 画面 */
+.bgmview { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; height: 100%; }
+.bgmmain { display: flex; flex-direction: column; gap: 10px; min-width: 0; overflow-y: auto; padding-bottom: 16px; }
+.bgmhead { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.bgmlanes { padding: 0 20px; display: flex; flex-direction: column; gap: 8px; }
+.bgmside { border-left: 1px solid var(--line); background: var(--panel); padding: 14px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.bgmside h2 { margin: 0; font-size: 15px; }
+.bgmside h3 { margin: 6px 0 0; font-size: 13px; }
+.bgmside label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--sub); min-width: 0; }
+.bgmside select, .bgmside input { height: 32px; padding: 0 8px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; width: 100%; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.kftable { display: flex; flex-direction: column; gap: 4px; }
+.kfhead, .kfrow { display: grid; grid-template-columns: 1fr 80px auto; gap: 6px; align-items: center; font-size: 12px; }
+.kfhead { color: var(--sub); }
+.kfrow { padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+.kfrow.sel { background: #2B3A55; }
+.kfrow input { height: 28px !important; }
+.kfrow .btn { height: 28px; padding: 0 8px; font-size: 12px; }
+.zero { position: absolute; left: 0; right: 0; border-top: 1px dashed #4A4F5A; pointer-events: none; }
+.zero span { position: absolute; right: 4px; top: -14px; font-size: 10px; color: var(--dim); }
+.edge { position: absolute; top: 0; bottom: 0; width: 12px; margin-left: -6px; cursor: ew-resize; touch-action: none; }
+.edge::after { content: ''; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; background: #fff; }
+.fadeh { position: absolute; top: 2px; width: 14px; height: 14px; margin-left: -7px; background: #fff; border: 2px solid #6E58B8; border-radius: 2px; cursor: ew-resize; touch-action: none; }
+.kf { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; background: #1B1E24; border: 2px solid #E2D6FF; padding: 0; cursor: grab; touch-action: none; }
+.kf.sel { background: #E2D6FF; box-shadow: 0 0 0 3px rgba(226, 214, 255, 0.35); }
+.kflabel { position: absolute; transform: translate(12px, -26px); padding: 2px 6px; border-radius: 4px; background: #3A2F5C; color: #F0E9FF; font-size: 11px; white-space: nowrap; pointer-events: none; }
+.marker { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed #8FE3B8; pointer-events: none; }
+.marker span { position: absolute; left: 4px; top: 2px; font-size: 11px; color: #8FE3B8; white-space: nowrap; }
+.lastwords { position: absolute; left: 8px; bottom: 4px; pointer-events: none; }
+.bgmbody { grid-template-columns: minmax(0, 1fr); }
+.bgmbody .main { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+
+/* ---- 整理（境目・アイコン・ヘルプ） */
+.btn.icon { width: 36px; padding: 0; justify-content: center; }
+.savedot { width: 10px; height: 10px; border-radius: 50%; background: #5FD39A; }
+.savedot.saving { background: #A9C8FF; }
+.status { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #2B3A55; color: #A9C8FF; }
+.status.warn { background: #45262A; color: #FFB3B3; }
+.helpwrap { position: relative; }
+.help { position: absolute; right: 0; top: 44px; z-index: 20; width: 420px; max-height: 70vh; overflow-y: auto; padding: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: flex; flex-direction: column; gap: 6px; }
+.hrow { display: grid; grid-template-columns: 150px 1fr; gap: 10px; font-size: 12px; align-items: start; }
+.splitter { position: relative; background: var(--line); flex: 0 0 auto; touch-action: none; }
+.splitter.col { width: 6px; cursor: col-resize; }
+.splitter.row { height: 6px; cursor: row-resize; }
+.splitter:hover { background: #4A6BA8; }
+.mixtoggle { position: absolute; left: 20px; top: -11px; height: 22px; padding: 0 10px; font-size: 11px; background: var(--btn); color: var(--sub); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
+.editmain { overflow: hidden !important; }
+.trackwrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.mixwrap { flex: 0 0 auto; overflow-y: auto; }
+body.resizing-col { cursor: col-resize; user-select: none; }
+body.resizing-row { cursor: row-resize; user-select: none; }
+.bgmview { grid-template-columns: minmax(0, 1fr) 6px 340px; }
+.bgmside { border-left: none; }
+.bgmside details { border-bottom: 1px solid var(--line); padding-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
+.bgmside details > *:not(summary) { margin-top: 8px; }
+.bgmside summary { cursor: pointer; font-weight: 700; font-size: 13px; padding: 4px 0; }
+.kfrow { grid-template-columns: 1fr 80px 32px; }
+.kfrow .btn.icon { width: 32px; }
+.bgmlanes .trow .splitter.row { margin: -2px 0; border-radius: 3px; }
+.ruler.seekable { cursor: pointer; touch-action: none; }
+.ruler.seekable:hover { background: #1F232A; }

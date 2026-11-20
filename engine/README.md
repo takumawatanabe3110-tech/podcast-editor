@@ -44,7 +44,7 @@ cd engine
 ../.venv/bin/python -m podcast_engine serve 回.podproj   # ブラウザで http://127.0.0.1:8765/ が開く（止めるときは Ctrl+C）
 ```
 
-台本・波形・再生・カット・文字の修正ができる。変更はその場で .podproj と .transcript.json に保存される。
+台本・波形・再生・カット・文字の修正ができる。ミキサー（フェーダー・メーター）、BGM の編集、「書き出し（MP3）」ボタン（`render` コマンドと同じ結果）もある。変更はその場で .podproj と .transcript.json に保存される。
 初回は波形と試聴用の音を作るので少し待つ（.podcache/ に保存）。
 
 ### プロジェクトを作って書き出す
