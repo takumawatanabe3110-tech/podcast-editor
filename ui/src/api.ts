@@ -28,8 +28,9 @@ export const putTranscript = (t: Transcript) =>
 
 export const getPeaks = (sid: string) => fetch(`/api/peaks/${encodeURIComponent(sid)}`).then(r => json<Peaks>(r))
 
-export const getAudio = (sid: string) =>
-  fetch(`/api/audio/${encodeURIComponent(sid)}`).then(r => {
+/** 試聴用の音。raw＝ノイズ除去をかける前の音 */
+export const getAudio = (sid: string, raw = false) =>
+  fetch(`/api/audio/${encodeURIComponent(sid)}${raw ? '?raw=1' : ''}`).then(r => {
     if (!r.ok) throw new Error(`音声 ${sid} を読めません（${r.status}）`)
     return r.arrayBuffer()
   })

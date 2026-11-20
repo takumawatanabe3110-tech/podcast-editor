@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from scipy.signal import sosfreqz
 
-from podcast_engine.effects import eq_sos, make_chain, make_compressor, static_gain_db, validate
+from podcast_engine.effects import eq_sos, make_chain, gate_gain_db, make_compressor, static_gain_db, validate
 
 FS = 48000
 
@@ -74,3 +74,62 @@ def test_chain_and_validate():
     assert np.array_equal(chain(x), x)
     assert validate([{"type": "reverb"}], "voices[0].effects")
     assert validate([{"type": "compressor", "ratio": 2}], "m")  # threshold_db がない
+
+
+# ---------------------------------------------------------------- ゲート
+
+
+def _burst_signal(fs=24000):
+    rng = np.random.default_rng(1)
+    x = (rng.standard_normal(int(2.5 * fs)) * 10 ** (-70 / 20) * 0.3).astype(np.float32)  # 小さいノイズ
+    t = np.arange(int(0.3 * fs)) / fs
+    tone = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    for start in (int(0.3 * fs), int(1.7 * fs)):
+        x[start:start + len(tone)] = tone
+    return x[None, :]
+
+
+def _rms_db(x):
+    return 20 * np.log10(np.sqrt(np.mean(x.astype(np.float64) ** 2)) + 1e-12)
+
+
+def test_gate_gain_db_curve():
+    g = gate_gain_db(np.array([-80.0, -50.0, -10.0]), -50, 30)
+    assert g.tolist() == [-30.0, 0.0, 0.0]
+
+
+def test_gate_reduces_quiet_and_keeps_loud():
+    fs = 24000
+    x = _burst_signal(fs)
+    y = make_chain([{"type": "gate", "threshold_db": -50, "range_db": 30, "attack_ms": 1, "hold_ms": 50, "release_ms": 150}], fs)(x)
+    # 最初の無音部分（閉じたまま）と、バースト後に十分落ち着いた部分は range_db 下がる
+    for a, b in ((0.0, 0.25), (1.3, 1.65)):
+        sl = slice(int(a * fs), int(b * fs))
+        assert _rms_db(y[0, sl]) - _rms_db(x[0, sl]) == pytest.approx(-30, abs=1.0)
+    # 大きい部分（開ききった後）はそのまま
+    sl = slice(int(0.35 * fs), int(0.55 * fs))
+    assert _rms_db(y[0, sl]) - _rms_db(x[0, sl]) == pytest.approx(0, abs=0.5)
+
+
+def test_gate_hold_keeps_open():
+    fs = 24000
+    x = _burst_signal(fs)
+    base = {"type": "gate", "threshold_db": -50, "range_db": 30, "attack_ms": 1, "release_ms": 20}
+    end = int(0.6 * fs)  # バーストの終わり
+    sl = slice(end + int(0.01 * fs), end + int(0.04 * fs))  # 終わりの 10〜40ms 後
+    held = make_chain([{**base, "hold_ms": 100}], fs)(x)
+    nohold = make_chain([{**base, "hold_ms": 0}], fs)(x)
+    assert _rms_db(held[0, sl]) - _rms_db(x[0, sl]) > -1.0  # ホールド中は開いたまま
+    assert _rms_db(nohold[0, sl]) - _rms_db(x[0, sl]) < -10  # ホールド 0 なら閉じていく
+
+
+def test_gate_disabled_is_noop():
+    x = _burst_signal()
+    y = make_chain([{"type": "gate", "threshold_db": -50, "enabled": False}], 24000)(x)
+    assert np.array_equal(x, y)
+
+
+def test_gate_validate():
+    assert validate([{"type": "gate", "threshold_db": -50}], "fx") == []
+    assert validate([{"type": "gate"}], "fx")
+    assert validate([{"type": "gate", "threshold_db": -50, "range_db": -1}], "fx")

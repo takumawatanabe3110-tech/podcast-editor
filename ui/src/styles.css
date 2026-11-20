@@ -174,3 +174,62 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .bgmlanes .trow .splitter.row { margin: -2px 0; border-radius: 3px; }
 .ruler.seekable { cursor: pointer; touch-action: none; }
 .ruler.seekable:hover { background: #1F232A; }
+
+/* ---- エフェクト画面 */
+.fxview { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 0; height: 100%; }
+.fxlist { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+.fxtracks { flex-wrap: wrap; }
+.fxtracks button { display: inline-flex; align-items: center; gap: 6px; }
+.fxtracks .dot { width: 8px; height: 8px; border-radius: 50%; }
+.fxitems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; counter-reset: fx; }
+.fxitem { display: grid; grid-template-columns: auto 1fr auto; grid-template-areas: "chk name btns" "chk sum btns"; gap: 0 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); cursor: pointer; }
+.fxitem > input { grid-area: chk; }
+.fxitem .fxname { grid-area: name; font-size: 13px; font-weight: 700; }
+.fxitem .fxsum { grid-area: sum; font-size: 11px; color: var(--sub); }
+.fxitem .fxbtns { grid-area: btns; display: flex; gap: 2px; }
+.fxitem.sel { border-color: #4A6BA8; background: #1E2B42; }
+.fxitem.off .fxname, .fxitem.off .fxsum { color: var(--dim); text-decoration: line-through; }
+.btn.icon.sm { width: 26px; height: 26px; font-size: 12px; }
+.fxadd { position: relative; }
+.fxmenu { position: absolute; left: 0; top: 40px; z-index: 10; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-width: 180px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.fxmenu button { text-align: left; padding: 8px 10px; background: none; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.fxmenu button:hover { background: #2B3A55; }
+.fxmain { overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.fxpanel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.fxhead { display: flex; align-items: center; gap: 12px; }
+.fxhead h2 { margin: 0; font-size: 15px; }
+.onoff { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--sub); }
+.params { display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
+.prow { display: grid; grid-template-columns: 110px minmax(0, 1fr) 80px 36px; gap: 10px; align-items: center; font-size: 12px; color: var(--sub); }
+.prow input[type=range] { width: 100%; accent-color: #C6E36A; }
+.prow input[type=number], .prow select { height: 28px; padding: 0 6px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: 13px 'SF Mono', Menlo, monospace; }
+.prow select { grid-column: 2 / 4; font-family: inherit; }
+.eq { display: flex; flex-direction: column; gap: 12px; }
+.eqgraph { position: relative; height: 300px; background: #15181D; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; touch-action: none; }
+.eqgraph canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.eqnode { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; border: 2px solid; background: #1B1E24; color: #fff; font-size: 11px; font-weight: 700; padding: 0; cursor: grab; touch-action: none; }
+.eqnode.sel { background: #fff; color: #121418; }
+.bands { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.band { flex: 0 0 170px; display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #1F232A; }
+.band.sel { border-color: #4A6BA8; }
+.band.off { opacity: 0.5; }
+.bandhead { display: flex; align-items: center; gap: 6px; }
+.bandno { width: 18px; height: 18px; border-radius: 50%; color: #121418; font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: none; }
+.band select, .band input[type=number] { height: 26px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; min-width: 0; }
+.band select { flex: 1; }
+.band label { display: grid; grid-template-columns: 44px 1fr 24px; gap: 6px; align-items: center; font-size: 11px; color: var(--sub); }
+.dyn { display: flex; flex-direction: column; gap: 12px; }
+.dyntop { display: flex; gap: 14px; align-items: stretch; }
+.dyngraph { position: relative; width: 300px; height: 300px; flex: none; background: #15181D; border: 1px solid var(--line); border-radius: 8px; touch-action: none; cursor: ns-resize; }
+.dyngraph canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; }
+.dynhandle { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; background: #121418; border: 2px solid #C6E36A; touch-action: none; }
+.dynhandle.sq { cursor: ew-resize; }
+.dynhandle.ci { border-radius: 50%; cursor: ns-resize; }
+.dyndot { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #F2A65A; box-shadow: 0 0 8px #F2A65A; opacity: 0; pointer-events: none; }
+.grmeter { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; }
+.grbar { position: relative; flex: 1; width: 14px; background: #2A2E36; border-radius: 4px; overflow: hidden; }
+.grbar div { position: absolute; left: 0; right: 0; top: 0; height: 0; background: #E8964A; }
+.dynhist { position: relative; height: 120px; background: #15181D; border: 1px solid var(--line); border-radius: 8px; }
+.dynhist canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.dynlegend { position: absolute; right: 8px; top: 4px; display: flex; gap: 10px; }
+.fxpanel.compact { padding: 10px 14px; }

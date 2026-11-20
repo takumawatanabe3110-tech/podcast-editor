@@ -44,7 +44,7 @@ cd engine
 ../.venv/bin/python -m podcast_engine serve 回.podproj   # ブラウザで http://127.0.0.1:8765/ が開く（止めるときは Ctrl+C）
 ```
 
-台本・波形・再生・カット・文字の修正ができる。ミキサー（フェーダー・メーター）、BGM の編集、「書き出し（MP3）」ボタン（`render` コマンドと同じ結果）もある。変更はその場で .podproj と .transcript.json に保存される。
+台本・波形・再生・カット・文字の修正ができる。ミキサー（フェーダー・メーター）、BGM の編集、エフェクト画面（EQ・コンプ・ゲート・ノイズ除去を再生しながら調整）、「書き出し（MP3）」ボタン（`render` コマンドと同じ結果）もある。変更はその場で .podproj と .transcript.json に保存される。
 初回は波形と試聴用の音を作るので少し待つ（.podcache/ に保存）。
 
 ### プロジェクトを作って書き出す
@@ -57,7 +57,7 @@ cd engine
 ```
 
 `.podproj` は JSON。音量・BGM などは直接書き換える（形式は `podcast_engine/project.py`）。
-EQ・コンプは `voices[].effects`／`bgm_effects`／`master_effects` に書く（書き方は `podcast_engine/effects.py` の先頭）。
+EQ・コンプは `voices[].effects`／`bgm_effects`／`master_effects` に書く（書き方は `podcast_engine/effects.py` の先頭）。ノイズゲート（`gate`）も使える。
 元の音声は書き換えない（非破壊）。
 ノイズ除去の結果は `.podproj` と同じフォルダの `.podcache/` に保存される（1トラック数百MB。消しても次の書き出しで作り直す）。
 

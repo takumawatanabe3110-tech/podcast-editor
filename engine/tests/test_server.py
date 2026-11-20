@@ -87,6 +87,17 @@ def test_peaks_and_preview_audio(client):
     assert c.get("/api/audio/nope").status_code == 404
 
 
+def test_raw_audio_and_peaks(client):
+    c, tmp = client
+    r = c.get("/api/audio/a", params={"raw": 1})
+    x, fs = sf.read(io.BytesIO(r.content))
+    assert r.status_code == 200 and fs == PREVIEW_FS
+    assert len(x) / fs == pytest.approx(4.0, abs=0.01)
+    assert c.get("/api/audio/a").status_code == 200
+    pk = c.get("/api/peaks/a", params={"raw": 1}).json()
+    assert len(pk["min"]) == 4 * PEAK_RATE
+
+
 def _wait_export(c, timeout=60):
     end = time.time() + timeout
     while time.time() < end:

@@ -8,6 +8,8 @@
 //           → マスター（フェーダー）→ 試聴の音量 → リミッター → メーター → スピーカー
 // トラックの音量はつなぎ直さずに変えられる（ミキサーを動かしてもその場で反映、鳴らし直さない）。
 import { getAudio } from './api'
+import workletUrl from './dynamics.worklet.ts?worker&url'
+import { FxChain } from './fxchain'
 import { bgmGainCurve, bgmPieces, outputEnd, voicePieces } from './timeline'
 import type { Project } from './types'
 
@@ -27,11 +29,14 @@ export function faderDb(effects: unknown[]): number {
 
 type Listener = () => void
 
-interface Strip { gain: GainNode; pan?: StereoPannerNode; meter: AnalyserNode }
+interface Strip { gain: GainNode; fx: FxChain; pan?: StereoPannerNode; meter: AnalyserNode }
 
 export class Player {
   readonly ctx: AudioContext
   private buffers = new Map<string, AudioBuffer>()
+  private rawBuffers = new Map<string, AudioBuffer>() // ノイズ除去前（処理前と聴き比べる用）
+  private compare = false // true＝処理前（エフェクトもノイズ除去もなし）で鳴らす
+  private workletLoaded = false
   private nodes: AudioScheduledSourceNode[] = []
   private strips = new Map<string, Strip>()
   private masterGain: GainNode
@@ -56,8 +61,38 @@ export class Player {
     this.masterGain = this.ctx.createGain()
     this.trim = this.ctx.createGain()
     const meter = this.makeMeter()
-    this.masterGain.connect(this.trim).connect(limiter).connect(meter).connect(this.ctx.destination)
-    this.strips.set(MASTER_ID, { gain: this.masterGain, meter })
+    const fx = new FxChain(this.ctx, () => this.workletLoaded, 2)
+    this.masterGain.connect(fx.input)
+    fx.output.connect(this.trim).connect(limiter).connect(meter).connect(this.ctx.destination)
+    this.strips.set(MASTER_ID, { gain: this.masterGain, fx, meter })
+    // コンプ・ゲート（エンジンと同じ計算）を読み込む。読み込むまでは素通し
+    this.ctx.audioWorklet.addModule(workletUrl).then(() => {
+      this.workletLoaded = true
+      if (this.project) this.updateMix(this.project)
+    }, e => console.error('コンプ・ゲートを読み込めませんでした', e))
+  }
+
+  /** トラックのエフェクトの部品（EQ の画面の音の成分・コンプのメーター用） */
+  chain(id: string): FxChain | undefined { return this.strips.get(id)?.fx }
+
+  /** 処理前（エフェクトもノイズ除去もなし）で聴き比べる */
+  async setCompare(on: boolean) {
+    if (on && this.project) {
+      const sids = this.project.voices.filter(v => v.denoise).map(v => v.source).filter(s => !this.rawBuffers.has(s))
+      await Promise.all(sids.map(async sid => this.rawBuffers.set(sid, await this.ctx.decodeAudioData(await getAudio(sid, true)))))
+    }
+    this.compare = on
+    for (const st of this.strips.values()) st.fx.setBypass(on)
+    if (this.playing) this.start(this.position())
+    this.emit()
+  }
+  get comparing() { return this.compare }
+
+  /** 素材を読み込み直す（ノイズ除去の設定を変えたとき。サーバーが作り直すので時間がかかる） */
+  async reload(sid: string) {
+    const buf = await this.ctx.decodeAudioData(await getAudio(sid))
+    this.buffers.set(sid, buf)
+    if (this.playing) this.start(this.position())
   }
 
   on(fn: Listener) { this.listeners.add(fn); return () => { this.listeners.delete(fn) } }
@@ -115,20 +150,23 @@ export class Player {
     for (const v of p.voices) {
       const s = this.voiceStrip(v.source)
       const silent = v.mute || (soloOn && !this.solo.has(v.source))
-      set(s.gain.gain, silent ? 0 : dbToGain(v.gain_db + faderDb(v.effects)))
+      set(s.gain.gain, silent ? 0 : dbToGain(v.gain_db))
+      s.fx.set(v.effects) // フェーダー（gain）もエフェクトの並びの中でかかる
       if (s.pan) set(s.pan.pan, v.pan)
     }
     const bgm = this.bgmStrip()
-    set(bgm.gain.gain, soloOn && !this.solo.has(BGM_ID) ? 0 : dbToGain(faderDb(p.bgm_effects)))
-    set(this.masterGain.gain, dbToGain(faderDb(p.master_effects)))
+    set(bgm.gain.gain, soloOn && !this.solo.has(BGM_ID) ? 0 : 1)
+    bgm.fx.set(p.bgm_effects)
+    this.strips.get(MASTER_ID)!.fx.set(p.master_effects)
   }
 
   private voiceStrip(sid: string): Strip {
     let s = this.strips.get(sid)
     if (!s) {
       const gain = this.ctx.createGain(), pan = this.ctx.createStereoPanner(), meter = this.makeMeter()
-      gain.connect(pan).connect(meter).connect(this.masterGain)
-      s = { gain, pan, meter }
+      const fx = new FxChain(this.ctx, () => this.workletLoaded, 1)
+      gain.connect(fx.input); fx.output.connect(pan).connect(meter).connect(this.masterGain)
+      s = { gain, fx, pan, meter }
       this.strips.set(sid, s)
     }
     return s
@@ -138,8 +176,9 @@ export class Player {
     let s = this.strips.get(BGM_ID)
     if (!s) {
       const gain = this.ctx.createGain(), meter = this.makeMeter()
-      gain.connect(meter).connect(this.masterGain)
-      s = { gain, meter }
+      const fx = new FxChain(this.ctx, () => this.workletLoaded, 2)
+      gain.connect(fx.input); fx.output.connect(meter).connect(this.masterGain)
+      s = { gain, fx, meter }
       this.strips.set(BGM_ID, s)
     }
     return s
@@ -222,7 +261,7 @@ export class Player {
     this.playing = true
 
     for (const v of p.voices) {
-      const buf = this.buffers.get(v.source)
+      const buf = (this.compare && this.rawBuffers.get(v.source)) || this.buffers.get(v.source)
       if (!buf) continue
       const strip = this.voiceStrip(v.source)
       for (const pc of voicePieces(p, v.source, fromOut)) {

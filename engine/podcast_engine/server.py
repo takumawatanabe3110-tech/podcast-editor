@@ -5,7 +5,7 @@
 - PUT  /api/project          プロジェクトを保存（画面での編集）
 - GET  /api/transcript       文字起こし（.transcript.json）。なければ 404
 - GET  /api/peaks/{素材ID}   波形の形（ファイル内の時刻で 1/PEAK_RATE 秒ごとの最小・最大）
-- GET  /api/audio/{素材ID}   試聴用の音（24kHz・16bit WAV。声はノイズ除去済み）
+- GET  /api/audio/{素材ID}   試聴用の音（24kHz・16bit WAV。声はノイズ除去済み。?raw=1 なら元のまま）
 - POST /api/export           書き出しを裏で始める（.mp3 / .wav）。同時には1つだけ
 - GET  /api/export           書き出しの状況（idle / running / done / error）
 重い処理（ノイズ除去・波形・試聴用の音）は .podcache/ に保存して使い回す。
@@ -74,9 +74,11 @@ class Workspace:
     def transcript_path(self) -> Path:
         return self.path.with_suffix(".transcript.json")
 
-    def playback_source(self, p: Project, sid: str) -> Path:
-        """画面で鳴らす素材。声でノイズ除去が付いていれば、除去済み（キャッシュ）を使う。"""
+    def playback_source(self, p: Project, sid: str, raw: bool = False) -> Path:
+        """画面で鳴らす素材。声でノイズ除去が付いていれば、除去済み（キャッシュ）を使う。raw なら元のまま。"""
         src = p.source_path(sid, self.base)
+        if raw:
+            return src
         voice = next((v for v in p.voices if v.source == sid), None)
         if voice is not None and voice.denoise:
             from .denoise import denoised_path
@@ -142,8 +144,8 @@ class Workspace:
 
     # ---- 波形
 
-    def peaks(self, p: Project, sid: str) -> dict:
-        path = self.playback_source(p, sid)
+    def peaks(self, p: Project, sid: str, raw: bool = False) -> dict:
+        path = self.playback_source(p, sid, raw)
         out = self.cache / f"{path.stem}.peaks-{_key(path, str(PEAK_RATE))}.json"
         if out.exists():
             return json.loads(out.read_text(encoding="utf-8"))
@@ -164,8 +166,8 @@ class Workspace:
 
     # ---- 試聴用の音
 
-    def preview_audio(self, p: Project, sid: str) -> Path:
-        path = self.playback_source(p, sid)
+    def preview_audio(self, p: Project, sid: str, raw: bool = False) -> Path:
+        path = self.playback_source(p, sid, raw)
         out = self.cache / f"{path.stem}.preview-{_key(path, str(PREVIEW_FS))}.wav"
         if out.exists():
             return out
@@ -245,12 +247,12 @@ def create_app(project_path: str | Path):
         return tr.to_dict()
 
     @app.get("/api/peaks/{sid}")
-    def get_peaks(sid: str):
-        return ws.peaks(project_or_404(sid), sid)
+    def get_peaks(sid: str, raw: int = 0):
+        return ws.peaks(project_or_404(sid), sid, bool(raw))
 
     @app.get("/api/audio/{sid}")
-    def get_audio(sid: str):
-        return FileResponse(ws.preview_audio(project_or_404(sid), sid), media_type="audio/wav")
+    def get_audio(sid: str, raw: int = 0):
+        return FileResponse(ws.preview_audio(project_or_404(sid), sid, bool(raw)), media_type="audio/wav")
 
     @app.post("/api/export")
     def post_export(data: Optional[dict] = Body(None)):

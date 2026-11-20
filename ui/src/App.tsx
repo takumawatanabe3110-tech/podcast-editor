@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
 import { BgmView, type ChangeOpts } from './BgmView'
 import { cutLines, refToOutOrNext, restoreLine } from './editops'
+import { EffectsView } from './EffectsView'
 import { Mixer, type ExportStatus } from './Mixer'
 import { Player } from './player'
 import { usePlayhead } from './playhead'
@@ -15,6 +16,7 @@ const COLORS = ['#6AA7FF', '#F2A65A', '#7BD88F', '#E58AE0']
 const GROUP_MS = 1500 // 同じ操作（フェーダーを動かし続ける等）は、この間隔内なら「元に戻す」1回分にまとめる
 
 type Save = 'saved' | 'saving' | { error: string }
+type Screen = 'edit' | 'bgm' | 'fx'
 
 /** 並び（カット・BGM の位置やカーブ）が変わったか。変わっていなければ鳴らし直さずに音量だけ変える */
 function structuralChange(a: Project, b: Project) {
@@ -34,7 +36,8 @@ export default function App() {
   const [view, setView] = useState<View>({ start: 0, span: 30 })
   const [showRuby, setShowRuby] = useState(true)
   const [refTotal, setRefTotal] = useState(60)
-  const [screen, setScreen] = useState<'edit' | 'bgm'>('edit')
+  const [screen, setScreen] = useState<Screen>('edit')
+  const [denoiseBusy, setDenoiseBusy] = useState<Record<string, boolean>>({})
   const [solo, setSoloState] = useState<Set<string>>(new Set())
   const [exportStatus, setExportStatus] = useState<ExportStatus>({ state: 'idle' })
   const [layout, setLayout] = useLayout()
@@ -97,6 +100,13 @@ export default function App() {
     } else player.updateMix(next)
     saveSoon(next)
     bump(n => n + 1)
+    // ノイズ除去の設定が変わった声は、保存してからサーバーに作り直してもらい、読み込み直す
+    const changed = next.voices.filter(v => JSON.stringify(v.denoise) !== JSON.stringify(prev.voices.find(x => x.source === v.source)?.denoise))
+    if (changed.length) {
+      setDenoiseBusy(b => ({ ...b, ...Object.fromEntries(changed.map(v => [v.source, true])) }))
+      api.putProject(next).then(() => Promise.all(changed.map(v => player.reload(v.source).finally(() =>
+        setDenoiseBusy(b => ({ ...b, [v.source]: false })))))).catch(e => setSave({ error: String(e.message ?? e) }))
+    }
   }, [player, saveSoon])
 
   /** 画面からの変更。group が同じ操作が続くあいだは「元に戻す」1回分にまとめる */
@@ -212,6 +222,7 @@ export default function App() {
         <div className="tabs" role="group" aria-label="画面の切り替え">
           <button aria-pressed={screen === 'edit'} onClick={() => setScreen('edit')}>編集</button>
           <button aria-pressed={screen === 'bgm'} onClick={() => setScreen('bgm')}>BGM</button>
+          <button aria-pressed={screen === 'fx'} onClick={() => setScreen('fx')}>エフェクト</button>
         </div>
         {loading && <span className="status busy">{loading}</span>}
         {!transcript && !loading && <span className="status warn">文字起こしなし</span>}
@@ -264,6 +275,13 @@ export default function App() {
             )}
           </main>
         </div>
+      ) : screen === 'fx' ? (
+        <div className="body bgmbody">
+          <main className="main" style={{ overflow: 'hidden' }}>
+            <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef} />
+            <EffectsView project={project} player={player} colors={COLORS} onChange={update} denoiseBusy={denoiseBusy} />
+          </main>
+        </div>
       ) : (
         <div className="body bgmbody">
           <main className="main" style={{ overflow: 'hidden' }}>
@@ -277,7 +295,7 @@ export default function App() {
   )
 }
 
-const HELP: Record<'common' | 'edit' | 'bgm', [string, string][]> = {
+const HELP: Record<'common' | Screen, [string, string][]> = {
   common: [
     ['Space', '再生／一時停止'],
     ['⌘Z ／ ⇧⌘Z', '元に戻す／やり直す'],
@@ -306,9 +324,19 @@ const HELP: Record<'common' | 'edit' | 'bgm', [string, string][]> = {
     ['□ をドラッグ', 'フェードの長さを変える'],
     ['目盛りをダブルクリック', '表示を元に戻す'],
   ],
+  fx: [
+    ['処理前／処理後', 'エフェクトとノイズ除去をかけない音と聴き比べ'],
+    ['EQ の点を左右', '周波数'],
+    ['EQ の点を上下', '量（dB）'],
+    ['ホイール・Alt＋ドラッグ', 'ベルの幅（Q）'],
+    ['EQ の点をダブルクリック', '0 dB に戻す'],
+    ['□ を左右', 'しきい値'],
+    ['○ を上下', 'レシオ（コンプ）'],
+    ['グラフの上で上下', 'ニー（コンプ）／下げる量（ゲート）'],
+  ],
 }
 
-function Help({ screen, onClose }: { screen: 'edit' | 'bgm'; onClose: () => void }) {
+function Help({ screen, onClose }: { screen: Screen; onClose: () => void }) {
   useEffect(() => {
     const away = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest('.helpwrap')) onClose() }
     window.addEventListener('pointerdown', away)

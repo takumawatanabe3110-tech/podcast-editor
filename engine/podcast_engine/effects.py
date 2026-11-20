@@ -1,4 +1,4 @@
-"""エフェクト（EQ・コンプレッサー）。
+"""エフェクト（EQ・コンプレッサー・ゲート）。
 
 .podproj では、エフェクトを辞書のリストで書く（上から順にかかる）。例：
 
@@ -9,6 +9,8 @@
         {"type": "highshelf", "freq": 5000, "gain_db": 0.0}]}
     {"type": "compressor", "threshold_db": -10, "ratio": 4, "knee": 0,
      "attack_ms": 0.7, "release_ms": 93, "makeup_db": 0, "dry_mix": 0}
+    {"type": "gate", "threshold_db": -50, "range_db": 30, "attack_ms": 1,
+     "hold_ms": 50, "release_ms": 150}   # ノイズゲート（しきい値より小さい音を range_db 下げる）
     {"type": "gain", "db": 3.2}          # フェーダー。並べた位置でかかる
 
 Resolve（Fairlight）の画面の値をそのまま写せるように、項目名と単位をそろえている。
@@ -139,6 +141,53 @@ def make_compressor(params: dict, fs: int) -> Processor:
     return run
 
 
+# ---------------------------------------------------------------- ノイズゲート
+
+
+def gate_gain_db(level_db: np.ndarray, threshold_db: float, range_db: float) -> np.ndarray:
+    """入力レベル（dB）に対するゲートの狙いの音量（dB）。しきい値以上なら 0、未満なら -range_db。"""
+    return np.where(np.asarray(level_db) >= threshold_db, 0.0, -range_db)
+
+
+def make_gate(params: dict, fs: int) -> Processor:
+    """コンプと同じ作りのノイズゲート。attack＝開く速さ、release＝閉じる速さ。"""
+    thr = float(params["threshold_db"])
+    rng = float(params.get("range_db", 30.0))
+    attack = max(float(params.get("attack_ms", 1.0)), 0.01) / 1000
+    release = max(float(params.get("release_ms", 150.0)), 0.01) / 1000
+    block = max(1, int(fs * 0.00025))  # 0.25ms ごとに音量を見る
+    hold_blocks = max(0, int(round(float(params.get("hold_ms", 50.0)) / 1000 * fs / block)))
+    ca = np.exp(-block / (attack * fs))
+    cr = np.exp(-block / (release * fs))
+
+    def run(x: np.ndarray) -> np.ndarray:
+        n = x.shape[-1]
+        nb = -(-n // block)
+        pad = nb * block - n
+        peak = np.abs(np.pad(x, ((0, 0), (0, pad)))).max(axis=0).reshape(nb, block).max(axis=1)
+        level = 20 * np.log10(np.maximum(peak, 1e-9))
+        open_ = level >= thr
+        g = np.empty(nb)
+        cur = -rng  # 最初は閉じている
+        hold = 0
+        for i, o in enumerate(open_.tolist()):
+            if o:
+                hold = hold_blocks
+                t = 0.0
+            elif hold > 0:
+                hold -= 1  # しきい値を下回ってもホールドの間は開けたまま
+                t = 0.0
+            else:
+                t = -rng
+            c = ca if t > cur else cr  # 上げる（開く）ときがアタック
+            cur = t + c * (cur - t)
+            g[i] = cur
+        gain = 10 ** (np.repeat(g, block)[:n] / 20)
+        return (x * gain.astype(np.float32)).astype(np.float32)
+
+    return run
+
+
 # ---------------------------------------------------------------- 音量（フェーダー）
 
 
@@ -177,6 +226,7 @@ def make_limiter(params: dict, fs: int) -> Processor:
 _FACTORIES: Dict[str, Callable[[dict, int], Processor]] = {
     "eq": make_eq,
     "compressor": make_compressor,
+    "gate": make_gate,
     "gain": make_gain,
     "limiter": make_limiter,
 }
@@ -209,4 +259,9 @@ def validate(effects: List[dict], where: str) -> List[str]:
             for k in ("threshold_db", "ratio"):
                 if k not in e:
                     errs.append(f"{where}[{i}]: compressor に {k} がありません")
+        elif e["type"] == "gate":
+            if "threshold_db" not in e:
+                errs.append(f"{where}[{i}]: gate に threshold_db がありません")
+            if float(e.get("range_db", 30.0)) < 0:
+                errs.append(f"{where}[{i}]: gate の range_db は 0 以上にしてください")
     return errs
