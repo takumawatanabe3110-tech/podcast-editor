@@ -103,6 +103,14 @@ def static_gain_db(level_db: np.ndarray, threshold_db: float, ratio: float, knee
     return g
 
 
+def _ramp_db(g: np.ndarray, init: float, block: int, n: int) -> np.ndarray:
+    """ブロックごとの音量(dB)を、前のブロックの値から直線でつないでサンプル単位にする。
+    階段のままだと 4kHz 付近に「ジリジリ」した音が出るため。"""
+    prev = np.concatenate(([init], g[:-1]))
+    frac = (np.arange(block) + 1) / block
+    return (prev[:, None] + (g - prev)[:, None] * frac[None, :]).reshape(-1)[:n]
+
+
 def make_compressor(params: dict, fs: int) -> Processor:
     thr = float(params["threshold_db"])
     ratio = float(params["ratio"])
@@ -132,7 +140,7 @@ def make_compressor(params: dict, fs: int) -> Processor:
             c = ca if t < cur else cr
             cur = t + c * (cur - t)
             g[i] = cur
-        gain = 10 ** (np.repeat(g, block)[:n] / 20) * makeup
+        gain = 10 ** (_ramp_db(g, 0.0, block, n) / 20) * makeup
         y = x * gain.astype(np.float32)
         if dry > 0:
             y = (1 - dry) * y + dry * x
@@ -182,7 +190,7 @@ def make_gate(params: dict, fs: int) -> Processor:
             c = ca if t > cur else cr  # 上げる（開く）ときがアタック
             cur = t + c * (cur - t)
             g[i] = cur
-        gain = 10 ** (np.repeat(g, block)[:n] / 20)
+        gain = 10 ** (_ramp_db(g, -rng, block, n) / 20)
         return (x * gain.astype(np.float32)).astype(np.float32)
 
     return run

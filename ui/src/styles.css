@@ -233,3 +233,30 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .dynhist canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .dynlegend { position: absolute; right: 8px; top: 4px; display: flex; gap: 10px; }
 .fxpanel.compact { padding: 10px 14px; }
+
+/* ---- エフェクト画面（チャンネル型：EQ・ダイナミクス・フェーダーを同時に） */
+.fxdash { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; height: 100%; }
+.fxbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.fxgroup { display: inline-flex; align-items: center; gap: 8px; }
+.fxlabel { font-size: 12px; color: var(--sub); }
+.fxbar select, .numsm { height: 30px; padding: 0 6px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.numsm { width: 64px; font-family: 'SF Mono', Menlo, monospace; }
+.numsm.wide { width: 100%; }
+.fxgrid { display: grid; grid-template-columns: minmax(0, 1fr) 150px; grid-template-areas: "eq fader" "dyn fader"; gap: 12px; padding: 12px 20px; overflow-y: auto; align-content: start; }
+.area-eq { grid-area: eq; }
+.area-dyn { grid-area: dyn; }
+.area-fader { grid-area: fader; align-self: stretch; align-items: center; }
+.fxgrid .fxpanel { gap: 10px; padding: 12px; }
+.fxgrid .eqgraph { height: 240px; }
+.bandsbox summary { cursor: pointer; font-size: 12px; color: var(--sub); padding: 2px 0; }
+.bandsbox .bands { margin-top: 8px; }
+.fxgrid .dyntop { flex-wrap: wrap; }
+.fxgrid .dyngraph { width: 240px; height: 240px; cursor: default; }
+.dyncols { flex: 1 1 380px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; min-width: 0; }
+.dyncol { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.dyncol .params { max-width: none; }
+.dyncol .prow { grid-template-columns: 76px minmax(0, 1fr) 62px 26px; gap: 6px; }
+.fxgrid .dynhist { height: 90px; }
+.fadercol { display: flex; gap: 10px; align-items: stretch; height: 340px; }
+.meter.big { width: 14px; }
+.fader.big { height: 340px; width: 32px; }

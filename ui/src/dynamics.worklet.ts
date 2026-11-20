@@ -1,5 +1,6 @@
 // AudioWorklet：コンプとゲート。dynamicsCore を包むだけ（DOM には依存しない）。
 import { CompressorCore, GateCore } from './dynamicsCore'
+import { LimiterCore } from './limiterCore'
 
 // AudioWorklet のグローバルは DOM の型にないので最小限だけ宣言する
 declare const sampleRate: number
@@ -55,3 +56,9 @@ function makeProcessor(make: (fs: number) => Core) {
 
 registerProcessor('pod-compressor', makeProcessor((fs) => new CompressorCore(fs)))
 registerProcessor('pod-gate', makeProcessor((fs) => new GateCore(fs)))
+// 試聴の最後の音割れ防止（先読みリミッター）。メーターの代わりに下げた量を gainDb で送る
+registerProcessor('pod-limiter', makeProcessor((fs) => {
+  const core = new LimiterCore(fs) as LimiterCore & { lastInDb: number; lastOutDb: number }
+  core.lastInDb = -Infinity; core.lastOutDb = -Infinity
+  return core
+}))

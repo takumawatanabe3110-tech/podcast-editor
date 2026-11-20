@@ -1,16 +1,16 @@
-// ③④ エフェクト：トラックを選び、エフェクトを上から順に並べる（オン／オフ・追加・削除・並べ替え）。
-// 選んだエフェクトを右で調整する。EQ は線の上の点、コンプはグラフの □ ○ をドラッグ。
-// 再生中は、処理前・処理後の音の成分（EQ）や、下げた量・音量の動き（コンプ・ゲート）がその場で動く。
+// ③④ エフェクト：選んだトラックの EQ・ダイナミクス（ゲート＋コンプ）・フェーダーを1つの画面で同時に調整する（Resolve のチャンネルの画面のように）。
+// かかる順番は ノイズ除去 → EQ → ダイナミクス → フェーダー（EQ とダイナミクスの順は入れ替えられる）。
+// 再生中は、EQ の処理前・処理後の音の成分、ダイナミクスの下げた量と音量の動き、フェーダーのメーターがその場で動く。
 import { useEffect, useRef, useState } from 'react'
 import { compStaticGainDb, eqResponseDb, gateStaticGainDb, logFreqs } from './dsp'
-import { BGM_ID, MASTER_ID, type Player } from './player'
+import { withFader } from './Mixer'
+import { BGM_ID, MASTER_ID, faderDb, type Player } from './player'
 import { usePlayhead } from './playhead'
 import type { Project } from './types'
 
 type Fx = { type: string; enabled?: boolean; [k: string]: any } // eslint-disable-line @typescript-eslint/no-explicit-any
 type Band = { type: string; freq: number; gain_db?: number; q?: number; enabled?: boolean }
 
-const NAMES: Record<string, string> = { eq: 'EQ', compressor: 'コンプレッサー', gate: 'ノイズゲート', gain: '音量（フェーダー）', limiter: 'リミッター' }
 const BAND_COLORS = ['#FF8A8A', '#F2A65A', '#E5D35A', '#6DD08A', '#5FD3E6', '#B79CFF', '#E58AE0', '#9BB0C8']
 const BAND_TYPES: [string, string][] = [['highpass', 'ハイパス'], ['lowshelf', 'ローシェルフ'], ['bell', 'ベル'], ['highshelf', 'ハイシェルフ'], ['lowpass', 'ローパス']]
 
@@ -20,7 +20,6 @@ const NEW_FX: Record<string, Fx> = {
     { type: 'bell', freq: 1000, gain_db: 0, q: 1 }, { type: 'bell', freq: 3000, gain_db: 0, q: 1 }, { type: 'highshelf', freq: 6000, gain_db: 0 }] },
   compressor: { type: 'compressor', threshold_db: -20, ratio: 3, knee: 30, attack_ms: 5, release_ms: 100, makeup_db: 0, dry_mix: 0 },
   gate: { type: 'gate', threshold_db: -50, range_db: 20, attack_ms: 1, hold_ms: 50, release_ms: 150 },
-  gain: { type: 'gain', db: 0 },
   limiter: { type: 'limiter', ceiling_db: -1, release_ms: 50 },
 }
 
@@ -38,128 +37,212 @@ function withTrackEffects(p: Project, id: TrackId, fx: Fx[]): Project {
   return { ...p, voices: p.voices.map(v => (v.source === id ? { ...v, effects: fx } : v)) }
 }
 
-function summary(e: Fx): string {
-  switch (e.type) {
-    case 'eq': return `${(e.bands as Band[]).filter(b => b.enabled !== false).length} バンド`
-    case 'compressor': return `${e.threshold_db} dB ・ ${e.ratio}:1`
-    case 'gate': return `${e.threshold_db} dB ・ −${e.range_db} dB`
-    case 'gain': return `${e.db > 0 ? '+' : ''}${Number(e.db).toFixed(1)} dB`
-    case 'limiter': return `${e.ceiling_db ?? -1} dB`
-    default: return ''
-  }
+// ---------------------------------------------------------------- 並びの操作（エンジンには上から順のリストで渡す）
+
+const isDyn = (e: Fx) => e.type === 'gate' || e.type === 'compressor'
+const idxOf = (fx: Fx[], type: string) => fx.findIndex(e => e.type === type)
+
+/** EQ がダイナミクスより前か（どちらかがなければ前とみなす） */
+export function eqFirst(fx: Fx[]): boolean {
+  const e = idxOf(fx, 'eq'), d = fx.findIndex(isDyn)
+  return e < 0 || d < 0 || e < d
 }
+
+/** type のエフェクトを置き換える。なければ決まった場所に入れる（フェーダー・リミッターより前） */
+export function putFx(fx: Fx[], e: Fx): Fx[] {
+  const i = idxOf(fx, e.type)
+  if (i >= 0) return fx.map((x, k) => (k === i ? e : x))
+  const list = [...fx]
+  const tail = list.findIndex(x => x.type === 'gain' || x.type === 'limiter')
+  let at = tail >= 0 ? tail : list.length
+  const ei = idxOf(list, 'eq'), gi = idxOf(list, 'gate'), ci = idxOf(list, 'compressor')
+  const first = eqFirst(list)
+  if (e.type === 'eq') {
+    const dyn = list.map((x, k) => (isDyn(x) ? k : -1)).filter(k => k >= 0)
+    if (dyn.length) at = first ? dyn[0] : dyn[dyn.length - 1] + 1
+  } else if (e.type === 'gate') {
+    if (ci >= 0) at = ci
+    else if (ei >= 0) at = first ? ei + 1 : ei
+  } else if (e.type === 'compressor') {
+    if (gi >= 0) at = gi + 1
+    else if (ei >= 0) at = first ? ei + 1 : ei
+  } else if (e.type === 'limiter') at = list.length
+  list.splice(at, 0, e)
+  return list
+}
+
+/** ダイナミクスの中は ゲート → コンプ の順にそろえる（Resolve と同じ） */
+export function gateBeforeComp(fx: Fx[]): Fx[] {
+  const gi = idxOf(fx, 'gate'), ci = idxOf(fx, 'compressor')
+  if (gi < 0 || ci < 0 || gi < ci) return fx
+  const list = [...fx];[list[gi], list[ci]] = [list[ci], list[gi]]
+  return list
+}
+
+/** EQ とダイナミクスの順番を入れ替える */
+export function setOrder(fx: Fx[], eqBefore: boolean): Fx[] {
+  const eq = fx.find(e => e.type === 'eq'), dyn = fx.filter(isDyn)
+  if (!eq || !dyn.length) return fx
+  const first = fx.findIndex(e => e.type === 'eq' || isDyn(e))
+  const rest = fx.filter(e => e.type !== 'eq' && !isDyn(e))
+  const block = eqBefore ? [eq, ...dyn] : [...dyn, eq]
+  return [...rest.slice(0, first), ...block, ...rest.slice(first)]
+}
+
+// ---------------------------------------------------------------- 画面
 
 interface Props {
   project: Project; player: Player; colors: string[]
   onChange: (p: Project, group?: string) => void
   denoiseBusy: Record<string, boolean>
+  track: TrackId | null; setTrack: (t: TrackId) => void // 選んだトラック（App が持つ。そのトラックだけ鳴らすため）
 }
 
-export function EffectsView({ project, player, colors, onChange, denoiseBusy }: Props) {
+export function EffectsView({ project, player, colors, onChange, denoiseBusy, track: picked, setTrack }: Props) {
   const tracks: { id: TrackId; name: string; color: string }[] = [
     ...project.voices.map((v, i) => ({ id: v.source, name: v.name || v.source, color: colors[i % colors.length] })),
     { id: BGM_ID, name: 'BGM', color: '#B79CFF' },
     { id: MASTER_ID, name: 'マスター', color: '#E8EAED' },
   ]
-  const [track, setTrack] = useState<TrackId>(tracks[0].id)
-  const [sel, setSel] = useState<number | 'denoise'>(0)
-  const [adding, setAdding] = useState(false)
+  const track: TrackId = picked ?? tracks[0].id
   const comparing = usePlayhead(player, () => player.comparing)
   const voice = project.voices.find(v => v.source === track)
   const fx = trackEffects(project, track)
-  const set = (list: Fx[], group: string) => onChange(withTrackEffects(project, track, list), group)
-  const setOne = (i: number, e: Fx, group: string) => set(fx.map((x, k) => (k === i ? e : x)), group)
-  useEffect(() => { setSel(voice?.denoise !== undefined && fx.length === 0 ? 'denoise' : 0) }, [track]) // eslint-disable-line react-hooks/exhaustive-deps
+  const set = (list: Fx[], group: string) => onChange(withTrackEffects(project, track, gateBeforeComp(list)), group)
+  const eqI = idxOf(fx, 'eq'), gateI = idxOf(fx, 'gate'), compI = idxOf(fx, 'compressor'), limI = idxOf(fx, 'limiter')
+  const eq = eqI >= 0 ? fx[eqI] : null
+  const color = tracks.find(t => t.id === track)?.color ?? '#fff'
 
-  const move = (i: number, d: -1 | 1) => {
-    const j = i + d
-    if (j < 0 || j >= fx.length) return
-    const list = [...fx];[list[i], list[j]] = [list[j], list[i]]
-    set(list, `move-${Date.now()}`); setSel(j)
+  /** type のエフェクトを変える（なければ作る） */
+  const put = (e: Fx, group: string) => set(putFx(fx, e), group)
+  /** オン／オフ。なければ作ってオンにする */
+  const toggle = (type: string, on: boolean) => {
+    const i = idxOf(fx, type)
+    put(i >= 0 ? { ...fx[i], enabled: on } : structuredClone(NEW_FX[type]), `en-${type}-${Date.now()}`)
   }
-  const selected = typeof sel === 'number' ? fx[sel] : undefined
+  const denoise = voice?.denoise as { atten_lim_db?: number | null } | null | undefined
+  const dnLevel = !denoise ? 'none' : denoise.atten_lim_db ? 'mild' : 'strong'
+  const setDenoise = (d: object | null) => voice && onChange({ ...project, voices: project.voices.map(v => (v === voice ? { ...v, denoise: d } : v)) }, `dn-${Date.now()}`)
+  const out = project.output as { loudness_lufs?: number | null; true_peak_dbtp?: number }
+  const order = eqFirst(fx)
 
   return (
-    <div className="fxview">
-      <aside className="fxlist">
-        <div className="tabs fxtracks" role="group" aria-label="トラック">
+    <div className="fxdash">
+      <div className="fxbar">
+        <div className="tabs fxtracks" role="group" aria-label="トラック" title="選んだトラックだけを鳴らす（マスターは全部）">
           {tracks.map(t => (
             <button key={t.id} aria-pressed={track === t.id} onClick={() => setTrack(t.id)}>
               <span className="dot" style={{ background: t.color }} />{t.name}
             </button>
           ))}
         </div>
-        <div className="tabs" role="group" aria-label="聴き比べ" title="処理前＝エフェクトもノイズ除去もかけない音">
+        <div className="tabs" role="group" aria-label="聴き比べ" title="処理前＝エフェクトもノイズ除去もかけない音（フェーダーの分の音量はそろえる）">
           <button aria-pressed={comparing} onClick={() => void player.setCompare(true)}>処理前</button>
           <button aria-pressed={!comparing} onClick={() => void player.setCompare(false)}>処理後</button>
         </div>
-        <ol className="fxitems">
-          {voice && (
-            <li className={`fxitem${sel === 'denoise' ? ' sel' : ''}`} onClick={() => setSel('denoise')}>
-              <div className="fxname">ノイズ除去（AI）</div>
-              <div className="fxsum">{denoiseBusy[track] ? '作り直し中…' : voice.denoise ? ((voice.denoise as { atten_lim_db?: number | null }).atten_lim_db ? '控えめ' : '強') : 'なし'}</div>
-            </li>
-          )}
-          {fx.map((e, i) => (
-            <li key={i} className={`fxitem${sel === i ? ' sel' : ''}${e.enabled === false ? ' off' : ''}`} onClick={() => setSel(i)}>
-              <input type="checkbox" checked={e.enabled !== false} aria-label={`${NAMES[e.type] ?? e.type}をオン`} title="オン／オフ"
-                onClick={ev => ev.stopPropagation()} onChange={ev => setOne(i, { ...e, enabled: ev.target.checked }, `en-${Date.now()}`)} />
-              <div className="fxname">{NAMES[e.type] ?? e.type}</div>
-              <div className="fxsum">{summary(e)}</div>
-              <div className="fxbtns">
-                <button className="btn icon sm" aria-label="上へ" title="上へ" disabled={i === 0} onClick={ev => { ev.stopPropagation(); move(i, -1) }}>↑</button>
-                <button className="btn icon sm" aria-label="下へ" title="下へ" disabled={i === fx.length - 1} onClick={ev => { ev.stopPropagation(); move(i, 1) }}>↓</button>
-                <button className="btn icon sm" aria-label="削除" title="削除" onClick={ev => { ev.stopPropagation(); set(fx.filter((_, k) => k !== i), `del-${Date.now()}`); setSel(Math.max(0, i - 1)) }}>×</button>
-              </div>
-            </li>
-          ))}
-        </ol>
-        <div className="fxadd">
-          <button className="btn" aria-expanded={adding} onClick={() => setAdding(a => !a)}>＋ エフェクトを追加</button>
-          {adding && (
-            <div className="fxmenu" role="menu">
-              {Object.keys(NEW_FX).filter(k => k !== 'limiter' || track === MASTER_ID).map(k => (
-                <button key={k} role="menuitem" onClick={() => {
-                  // 新しいエフェクトは、フェーダー（gain）より前に入れる
-                  const gi = fx.findIndex(e => e.type === 'gain')
-                  const at = gi >= 0 && k !== 'gain' && k !== 'limiter' ? gi : fx.length
-                  set([...fx.slice(0, at), structuredClone(NEW_FX[k]), ...fx.slice(at)], `add-${Date.now()}`)
-                  setSel(at); setAdding(false)
-                }}>{NAMES[k]}</button>
-              ))}
+        {voice && (
+          <div className="fxgroup" title="AI のノイズ除去（DeepFilterNet）。変えると作り直す（1トラック約1分）">
+            <span className="fxlabel">ノイズ除去</span>
+            <div className="tabs" role="group" aria-label="ノイズ除去の強さ">
+              <button aria-pressed={dnLevel === 'none'} onClick={() => setDenoise(null)}>なし</button>
+              <button aria-pressed={dnLevel === 'mild'} onClick={() => setDenoise({ method: 'deepfilternet', atten_lim_db: 12 })}>控えめ</button>
+              <button aria-pressed={dnLevel === 'strong'} onClick={() => setDenoise({ method: 'deepfilternet', atten_lim_db: null })}>強</button>
+            </div>
+            {denoiseBusy[track] && <span className="status busy">作り直し中…</span>}
+          </div>
+        )}
+        {track === MASTER_ID && (
+          <div className="fxgroup">
+            <span className="fxlabel">書き出しの大きさ</span>
+            <select value={out.loudness_lufs == null ? 'none' : String(out.loudness_lufs)} aria-label="そろえる大きさ"
+              onChange={e => onChange({ ...project, output: { ...project.output, loudness_lufs: e.target.value === 'none' ? null : +e.target.value } }, `lufs-${Date.now()}`)}>
+              <option value="-14">−14 LUFS（Spotify）</option>
+              <option value="-16">−16 LUFS（Apple）</option>
+              <option value="none">そろえない</option>
+              {out.loudness_lufs != null && out.loudness_lufs !== -14 && out.loudness_lufs !== -16 && <option value={String(out.loudness_lufs)}>{out.loudness_lufs} LUFS</option>}
+            </select>
+            <span className="fxlabel">ピーク上限</span>
+            <input type="number" step={0.1} value={out.true_peak_dbtp ?? -1} aria-label="ピークの上限（dBTP）" className="numsm"
+              onChange={e => e.target.value !== '' && onChange({ ...project, output: { ...project.output, true_peak_dbtp: +e.target.value } }, 'tp')} />
+            <span className="fxlabel">dBTP</span>
+          </div>
+        )}
+        <div className="fxgroup" title="EQ とダイナミクスのどちらを先にかけるか">
+          <span className="fxlabel">順番</span>
+          <div className="tabs" role="group" aria-label="かかる順番">
+            <button aria-pressed={order} onClick={() => set(setOrder(fx, true), `order-${Date.now()}`)}>EQ → ダイナミクス</button>
+            <button aria-pressed={!order} onClick={() => set(setOrder(fx, false), `order-${Date.now()}`)}>ダイナミクス → EQ</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="fxgrid">
+        <section className="fxpanel area-eq">
+          <div className="fxhead">
+            <h2>EQ</h2>
+            <label className="onoff"><input type="checkbox" checked={!!eq && eq.enabled !== false} onChange={e => toggle('eq', e.target.checked)} />オン</label>
+          </div>
+          {eq ? <EqEditor fx={eq} fs={project.sample_rate} player={player} track={track} onChange={(e, g) => put(e, g)} />
+            : <div className="hint">オンにすると、平らな EQ（5 バンド）から始めます</div>}
+        </section>
+
+        <section className="fxpanel area-dyn">
+          <div className="fxhead"><h2>ダイナミクス</h2><span className="hint">ゲート（小さい音を下げる）＋コンプ（大きい音を抑える）</span></div>
+          <DynEditor gate={gateI >= 0 ? fx[gateI] : null} comp={compI >= 0 ? fx[compI] : null} gateI={gateI} compI={compI}
+            player={player} track={track} onPut={put} onToggle={toggle} />
+          {track === MASTER_ID && (
+            <div className="dyncol">
+              <label className="onoff"><input type="checkbox" checked={limI >= 0 && fx[limI].enabled !== false} onChange={e => toggle('limiter', e.target.checked)} /><b>リミッター</b></label>
+              {limI >= 0 && <Params fx={fx[limI]} onChange={(e, g) => put(e, g)}
+                rows={[['ceiling_db', '上限', -12, 0, 0.1, 'dB'], ['release_ms', 'リリース', 5, 500, 1, 'ms']]} />}
             </div>
           )}
-        </div>
-        {voice && <div className="hint" title="声の大きさを測って自動で決めた値（ノイズ除去より前にかかる）">声の音量（自動） {voice.gain_db > 0 ? '+' : ''}{voice.gain_db.toFixed(1)} dB</div>}
-      </aside>
+        </section>
 
-      <main className="fxmain">
-        {track === MASTER_ID && <MasterOutput project={project} onChange={onChange} />}
-        {sel === 'denoise' && voice
-          ? <DenoiseEditor denoise={voice.denoise as { atten_lim_db?: number | null } | null} busy={!!denoiseBusy[track]}
-              onSet={d => onChange({ ...project, voices: project.voices.map(v => (v === voice ? { ...v, denoise: d } : v)) }, `dn-${Date.now()}`)}
-              onCompare={() => void player.setCompare(!player.comparing)} comparing={comparing} />
-          : selected ? (
-            <section className="fxpanel">
-              <div className="fxhead">
-                <h2>{NAMES[selected.type] ?? selected.type}</h2>
-                <label className="onoff"><input type="checkbox" checked={selected.enabled !== false}
-                  onChange={ev => setOne(sel as number, { ...selected, enabled: ev.target.checked }, `en-${Date.now()}`)} />オン</label>
-              </div>
-              {selected.type === 'eq' && <EqEditor fx={selected} fs={project.sample_rate} player={player} track={track}
-                onChange={(e, g) => setOne(sel as number, e, g)} />}
-              {selected.type === 'compressor' && <DynEditor kind="comp" fx={selected} player={player} track={track} index={sel as number}
-                onChange={(e, g) => setOne(sel as number, e, g)} />}
-              {selected.type === 'gate' && <DynEditor kind="gate" fx={selected} player={player} track={track} index={sel as number}
-                onChange={(e, g) => setOne(sel as number, e, g)} />}
-              {selected.type === 'gain' && <Params fx={selected} onChange={(e, g) => setOne(sel as number, e, g)}
-                rows={[['db', '音量', -30, 12, 0.1, 'dB']]} />}
-              {selected.type === 'limiter' && <Params fx={selected} onChange={(e, g) => setOne(sel as number, e, g)}
-                rows={[['ceiling_db', '上限', -12, 0, 0.1, 'dB'], ['release_ms', 'リリース', 5, 500, 1, 'ms']]} />}
-            </section>
-          ) : <div className="center">左の一覧からエフェクトを選ぶか、追加してください</div>}
-      </main>
+        <FaderPanel id={track} player={player} color={color} db={faderDb(fx)} gainDb={voice?.gain_db}
+          onChange={db => set(withFader(fx, db) as Fx[], 'fader')} />
+      </div>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------- フェーダーとメーター
+
+const F_LO = -30, F_HI = 12
+
+function FaderPanel({ id, player, color, db, gainDb, onChange }: {
+  id: TrackId; player: Player; color: string; db: number; gainDb?: number; onChange: (db: number) => void
+}) {
+  const bar = useRef<HTMLDivElement>(null), hold = useRef<HTMLDivElement>(null), peakText = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    let raf = 0, level = -Infinity, peak = -Infinity, at = 0
+    const pct = (d: number) => Math.max(0, Math.min(100, ((d + 60) / 60) * 100))
+    const loop = (now: number) => {
+      const d = player.playing ? player.levels()[id] ?? -Infinity : -Infinity
+      level = Math.max(d, level - 1.2)
+      if (d >= peak || now - at > 1500) { peak = d; at = now }
+      if (bar.current) { bar.current.style.height = `${pct(level)}%`; bar.current.style.background = level > -1 ? '#FF6B6B' : level > -9 ? '#E8C547' : '#5FD39A' }
+      if (hold.current) { hold.current.style.bottom = `${pct(peak)}%`; hold.current.style.opacity = peak > -60 ? '1' : '0' }
+      if (peakText.current) peakText.current.textContent = peak > -60 ? peak.toFixed(1) : '−∞'
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [id, player])
+  return (
+    <section className="fxpanel area-fader">
+      <div className="fxhead"><h2>フェーダー</h2></div>
+      <div className="fadercol">
+        <div className="meter big" aria-hidden="true"><div ref={bar} className="mbar" /><div ref={hold} className="mhold" /></div>
+        <input className="fader big" type="range" min={F_LO} max={F_HI} step={0.1} value={db} aria-label="フェーダー（dB）"
+          title="ダブルクリックで 0 dB" style={{ accentColor: color }}
+          onChange={e => onChange(+e.target.value)} onDoubleClick={() => onChange(0)} />
+      </div>
+      <input type="number" step={0.1} min={F_LO} max={F_HI} value={db} aria-label="フェーダーの値（dB）" className="numsm wide"
+        onChange={e => e.target.value !== '' && onChange(Math.max(F_LO, Math.min(F_HI, +e.target.value)))} />
+      <div className="hint">ピーク <span ref={peakText} className="mono">−∞</span> dB</div>
+      {gainDb != null && <div className="hint" title="声の大きさを測って自動で決めた値（ノイズ除去より前にかかる）">声の音量（自動）{gainDb > 0 ? '+' : ''}{gainDb.toFixed(1)} dB</div>}
+    </section>
   )
 }
 
@@ -190,54 +273,6 @@ function Params({ fx, rows, onChange }: { fx: Fx; rows: Row[]; onChange: (e: Fx,
         )
       })}
     </div>
-  )
-}
-
-// ---------------------------------------------------------------- ノイズ除去
-
-function DenoiseEditor({ denoise, busy, onSet, onCompare, comparing }: {
-  denoise: { atten_lim_db?: number | null } | null; busy: boolean
-  onSet: (d: object | null) => void; onCompare: () => void; comparing: boolean
-}) {
-  const level = !denoise ? 'none' : denoise.atten_lim_db ? 'mild' : 'strong'
-  return (
-    <section className="fxpanel">
-      <div className="fxhead"><h2>ノイズ除去（AI）</h2>{busy && <span className="status busy">作り直し中…（1トラック約1分）</span>}</div>
-      <div className="tabs" role="group" aria-label="ノイズ除去の強さ" title="DeepFilterNet。変えると作り直して保存し、次からは使い回す">
-        <button aria-pressed={level === 'none'} onClick={() => onSet(null)}>なし</button>
-        <button aria-pressed={level === 'mild'} onClick={() => onSet({ method: 'deepfilternet', atten_lim_db: 12 })}>控えめ（12 dB）</button>
-        <button aria-pressed={level === 'strong'} onClick={() => onSet({ method: 'deepfilternet', atten_lim_db: null })}>強</button>
-      </div>
-      <div><button className="btn" onClick={onCompare}>{comparing ? '処理後に戻す' : '処理前と聴き比べ'}</button></div>
-    </section>
-  )
-}
-
-// ---------------------------------------------------------------- マスターの書き出し設定
-
-function MasterOutput({ project, onChange }: { project: Project; onChange: (p: Project, group?: string) => void }) {
-  const out = project.output as { loudness_lufs?: number | null; true_peak_dbtp?: number }
-  const lufs = out.loudness_lufs
-  return (
-    <section className="fxpanel compact">
-      <div className="fxhead"><h2>書き出しの大きさ</h2></div>
-      <div className="params">
-        <label className="prow"><span>ラウドネス</span>
-          <select value={lufs == null ? 'none' : String(lufs)} aria-label="そろえる大きさ"
-            onChange={e => onChange({ ...project, output: { ...project.output, loudness_lufs: e.target.value === 'none' ? null : +e.target.value } }, `lufs-${Date.now()}`)}>
-            <option value="-14">−14 LUFS（Spotify）</option>
-            <option value="-16">−16 LUFS（Apple Podcasts）</option>
-            <option value="none">そろえない</option>
-            {lufs != null && lufs !== -14 && lufs !== -16 && <option value={String(lufs)}>{lufs} LUFS</option>}
-          </select><span /></label>
-        <label className="prow"><span>ピークの上限</span>
-          <input type="range" min={-60} max={0} step={1} value={(out.true_peak_dbtp ?? -1) * 10} aria-label="ピークの上限"
-            onChange={e => onChange({ ...project, output: { ...project.output, true_peak_dbtp: +e.target.value / 10 } }, 'tp')} />
-          <input type="number" step={0.1} value={out.true_peak_dbtp ?? -1} aria-label="ピークの上限（dBTP）"
-            onChange={e => e.target.value !== '' && onChange({ ...project, output: { ...project.output, true_peak_dbtp: +e.target.value } }, 'tp')} />
-          <span className="unit">dBTP</span></label>
-      </div>
-    </section>
   )
 }
 
@@ -373,6 +408,8 @@ function EqEditor({ fx, fs, player, track, onChange }: { fx: Fx; fs: number; pla
           </button>
         ))}
       </div>
+      <details className="bandsbox">
+        <summary>バンドの数値</summary>
       <div className="bands">
         {bands.map((b, i) => (
           <div key={i} className={`band${active === i ? ' sel' : ''}${b.enabled === false ? ' off' : ''}`} onClick={() => setActive(i)}>
@@ -396,16 +433,20 @@ function EqEditor({ fx, fs, player, track, onChange }: { fx: Fx; fs: number; pla
         ))}
         {bands.length < 8 && <button className="btn" onClick={() => onChange({ ...fx, bands: [...bands, { type: 'bell', freq: 1000, gain_db: 0, q: 1 }] }, `badd-${Date.now()}`)}>＋ バンド</button>}
       </div>
+      </details>
     </div>
   )
 }
 
-// ---------------------------------------------------------------- コンプ・ゲート
+
+// ---------------------------------------------------------------- ダイナミクス（ゲート＋コンプ）
 
 const L_MIN = -60 // グラフの左端・下端（dB）
+const GATE_COLOR = '#6AA7FF', COMP_COLOR = '#C6E36A'
 
-function DynEditor({ kind, fx, player, track, index, onChange }: {
-  kind: 'comp' | 'gate'; fx: Fx; player: Player; track: TrackId; index: number; onChange: (e: Fx, g: string) => void
+function DynEditor({ gate, comp, gateI, compI, player, track, onPut, onToggle }: {
+  gate: Fx | null; comp: Fx | null; gateI: number; compI: number; player: Player; track: TrackId
+  onPut: (e: Fx, g: string) => void; onToggle: (type: string, on: boolean) => void
 }) {
   const [box, { w, h }] = useSize<HTMLDivElement>()
   const graph = useRef<HTMLCanvasElement>(null)
@@ -413,13 +454,20 @@ function DynEditor({ kind, fx, player, track, index, onChange }: {
   const dot = useRef<HTMLDivElement>(null)
   const gr = useRef<HTMLDivElement>(null)
   const grText = useRef<HTMLSpanElement>(null)
-  const thr = Number(fx.threshold_db), ratio = Number(fx.ratio ?? 1), knee = Number(fx.knee ?? 0), range = Number(fx.range_db ?? 0)
-  const makeup = kind === 'comp' ? Number(fx.makeup_db ?? 0) : 0
-  const outOf = (l: number) => l + (kind === 'comp' ? compStaticGainDb(l, thr, ratio, knee) + makeup : gateStaticGainDb(l, thr, range))
+  const gOn = !!gate && gate.enabled !== false, cOn = !!comp && comp.enabled !== false
+  const gThr = Number(gate?.threshold_db ?? -50), gRange = Number(gate?.range_db ?? 0)
+  const cThr = Number(comp?.threshold_db ?? -20), ratio = Number(comp?.ratio ?? 1), knee = Number(comp?.knee ?? 0)
+  const makeup = cOn ? Number(comp?.makeup_db ?? 0) : 0
+  // 入る音 → 出る音（オンのものだけ。ゲート → コンプの順）
+  const outOf = (l: number) => {
+    let y = l
+    if (gOn) y += gateStaticGainDb(l, gThr, gRange)
+    if (cOn) y += compStaticGainDb(y, cThr, ratio, knee) + makeup
+    return y
+  }
   const px = (db: number, size: number) => ((db - L_MIN) / -L_MIN) * size
   const dbAt = (p: number, size: number) => L_MIN + (p / size) * -L_MIN
 
-  // 入る音と出る音の関係（線）
   useEffect(() => {
     const cv = graph.current
     if (!cv || !w) return
@@ -430,27 +478,36 @@ function DynEditor({ kind, fx, player, track, index, onChange }: {
     g.strokeStyle = '#2A2E36'; g.lineWidth = 1
     for (let d = -50; d < 0; d += 10) { const x = px(d, w), y = h - px(d, h); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.moveTo(0, y); g.lineTo(w, y); g.stroke() }
     g.strokeStyle = '#3A404B'; g.beginPath(); g.moveTo(0, h); g.lineTo(w, 0); g.stroke()
-    g.strokeStyle = fx.enabled === false ? '#6B7280' : '#C6E36A'; g.lineWidth = 3; g.beginPath()
+    // しきい値の縦線
+    g.setLineDash([4, 4])
+    if (gOn) { g.strokeStyle = GATE_COLOR + '88'; g.beginPath(); g.moveTo(px(gThr, w), 0); g.lineTo(px(gThr, w), h); g.stroke() }
+    if (cOn) { g.strokeStyle = COMP_COLOR + '88'; g.beginPath(); g.moveTo(px(cThr, w), 0); g.lineTo(px(cThr, w), h); g.stroke() }
+    g.setLineDash([])
+    g.strokeStyle = gOn || cOn ? '#FFFFFF' : '#6B7280'; g.lineWidth = 3; g.beginPath()
     for (let x = 0; x <= w; x += 2) {
-      const l = dbAt(x, w), y = h - px(outOf(l), h)
+      const y = h - px(Math.max(L_MIN - 20, outOf(dbAt(x, w))), h)
       if (x) g.lineTo(x, y); else g.moveTo(x, y)
     }
     g.stroke()
     g.fillStyle = '#6B7280'; g.font = '10px sans-serif'
     g.fillText('入る音（dB）→', w - 84, h - 4); g.fillText('出る音', 4, 12)
-  }, [w, h, thr, ratio, knee, range, makeup, kind, fx.enabled]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [w, h, gOn, cOn, gThr, gRange, cThr, ratio, knee, makeup]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 再生中：今の位置（点）・下げた量・直近 6 秒の音量の動き
+  // 再生中：今の位置・下げた量（ゲートとコンプの合計）・直近 6 秒の音量の動き
   useEffect(() => {
     let raf = 0
     const N = 360, ins = new Float32Array(N).fill(L_MIN), outs = new Float32Array(N).fill(L_MIN), grs = new Float32Array(N)
     let head = 0, last = 0
     const loop = (now: number) => {
-      const m = player.chain(track)?.meters(index)
-      const playing = player.playing
-      const inDb = playing && m ? Math.max(L_MIN, m.inDb) : L_MIN
-      const gdb = playing && m ? Math.min(0, m.gainDb) : 0
-      const outDb = playing && m ? Math.max(L_MIN, m.outDb) : L_MIN
+      const chain = player.chain(track)
+      const mg = gOn && gateI >= 0 ? chain?.meters(gateI) : undefined
+      const mc = cOn && compI >= 0 ? chain?.meters(compI) : undefined
+      const playing = player.playing && !!(mg || mc)
+      const first = (gateI >= 0 && compI >= 0 ? (gateI < compI ? mg : mc) : mg ?? mc)
+      const lastM = (gateI >= 0 && compI >= 0 ? (gateI < compI ? mc : mg) : mc ?? mg)
+      const inDb = playing && first ? Math.max(L_MIN, first.inDb) : L_MIN
+      const gdb = playing ? Math.min(0, (mg?.gainDb ?? 0) + (mc?.gainDb ?? 0)) : 0
+      const outDb = playing && lastM ? Math.max(L_MIN, lastM.outDb) : L_MIN
       if (dot.current) {
         dot.current.style.opacity = playing && inDb > L_MIN ? '1' : '0'
         dot.current.style.left = `${px(inDb, w)}px`
@@ -471,7 +528,10 @@ function DynEditor({ kind, fx, player, track, index, onChange }: {
           g.fillStyle = '#7A4E24'; g.beginPath(); g.moveTo(0, 0)
           for (let k = 0; k < N; k++) g.lineTo(xi(k), Math.min(H, (-grs[(head + k) % N] / 30) * H))
           g.lineTo(W, 0); g.closePath(); g.fill()
-          g.setLineDash([6, 4]); g.strokeStyle = '#C6E36A'; g.lineWidth = 1; g.beginPath(); g.moveTo(0, yl(thr)); g.lineTo(W, yl(thr)); g.stroke(); g.setLineDash([])
+          g.setLineDash([6, 4]); g.lineWidth = 1
+          if (gOn) { g.strokeStyle = GATE_COLOR; g.beginPath(); g.moveTo(0, yl(gThr)); g.lineTo(W, yl(gThr)); g.stroke() }
+          if (cOn) { g.strokeStyle = COMP_COLOR; g.beginPath(); g.moveTo(0, yl(cThr)); g.lineTo(W, yl(cThr)); g.stroke() }
+          g.setLineDash([])
           const line = (arr: Float32Array, color: string, lw: number) => {
             g.strokeStyle = color; g.lineWidth = lw; g.beginPath()
             for (let k = 0; k < N; k++) { const y = yl(arr[(head + k) % N]); if (k) g.lineTo(xi(k), y); else g.moveTo(xi(k), y) }
@@ -484,46 +544,40 @@ function DynEditor({ kind, fx, player, track, index, onChange }: {
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [player, track, index, w, h, thr, makeup]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [player, track, gateI, compI, gOn, cOn, w, h, gThr, cThr, makeup]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ドラッグ：□＝しきい値（左右）、○＝レシオ（上下、コンプだけ）、線の上で上下＝ニー（コンプ）／量（ゲート）
-  const drag = (what: 'thr' | 'ratio' | 'knee') => (ev: React.PointerEvent) => {
+  // ドラッグ：□＝しきい値（左右）、○＝コンプのレシオ（上下）
+  const drag = (what: 'gthr' | 'cthr' | 'ratio') => (ev: React.PointerEvent) => {
     ev.preventDefault(); ev.stopPropagation()
     const el = ev.currentTarget as HTMLElement
     el.setPointerCapture(ev.pointerId)
     const rect = box.current!.getBoundingClientRect()
-    const y0 = ev.clientY, k0 = knee, r0 = range
     const move = (m: PointerEvent) => {
-      if (what === 'thr') onChange({ ...fx, threshold_db: +Math.min(0, Math.max(L_MIN, dbAt(m.clientX - rect.left, rect.width))).toFixed(1) }, 'd-thr')
-      else if (what === 'ratio') {
-        // 右端（入る音 0 dB）での出る音の高さからレシオを逆算
+      const x = +Math.min(0, Math.max(L_MIN, dbAt(m.clientX - rect.left, rect.width))).toFixed(1)
+      if (what === 'gthr' && gate) onPut({ ...gate, threshold_db: x }, 'd-gthr')
+      else if (what === 'cthr' && comp) onPut({ ...comp, threshold_db: x }, 'd-cthr')
+      else if (what === 'ratio' && comp) {
         const out = dbAt(rect.height - (m.clientY - rect.top), rect.height) - makeup
-        const over = -thr, outOver = Math.max(0.01, out - thr)
-        onChange({ ...fx, ratio: +Math.min(20, Math.max(1, over / outOver)).toFixed(1) }, 'd-ratio')
-      } else if (kind === 'comp') onChange({ ...fx, knee: Math.round(Math.min(100, Math.max(0, k0 + (y0 - m.clientY) / 2))) }, 'd-knee')
-      else onChange({ ...fx, range_db: Math.round(Math.min(80, Math.max(0, r0 - (y0 - m.clientY) / 3))) }, 'd-range')
+        const over = -cThr, outOver = Math.max(0.01, out - cThr)
+        onPut({ ...comp, ratio: +Math.min(20, Math.max(1, over / outOver)).toFixed(1) }, 'd-ratio')
+      }
     }
     const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up) }
     el.addEventListener('pointermove', move); el.addEventListener('pointerup', up)
   }
 
-  const rows: Row[] = kind === 'comp'
-    ? [['threshold_db', 'しきい値', -60, 0, 0.5, 'dB'], ['ratio', 'レシオ', 1, 20, 0.1, ':1', true], ['knee', 'ニー', 0, 100, 1, ''],
-       ['attack_ms', 'アタック', 0.1, 200, 0.1, 'ms', true], ['release_ms', 'リリース', 5, 2000, 1, 'ms', true],
-       ['makeup_db', 'メイクアップ', -12, 24, 0.1, 'dB'], ['dry_mix', '原音を混ぜる', 0, 1, 0.01, '']]
-    : [['threshold_db', 'しきい値', -80, 0, 0.5, 'dB'], ['range_db', '下げる量', 0, 80, 1, 'dB'],
-       ['attack_ms', 'アタック', 0.1, 100, 0.1, 'ms', true], ['hold_ms', 'ホールド', 0, 500, 1, 'ms'], ['release_ms', 'リリース', 5, 2000, 1, 'ms', true]]
-
-  const endY = h - px(outOf(0), h)
   return (
     <div className="dyn">
       <div className="dyntop">
-        <div className="dyngraph" ref={box} onPointerDown={drag(kind === 'comp' ? 'knee' : 'knee')}
-          title={kind === 'comp' ? '線の上で上下にドラッグ：ニー' : '上下にドラッグ：下げる量'}>
+        <div className="dyngraph" ref={box}>
           <canvas ref={graph} />
           {w > 0 && <>
-            <div className="dynhandle sq" style={{ left: px(thr, w), top: h - px(outOf(thr), h) }} title={`しきい値 ${thr} dB`} onPointerDown={drag('thr')} />
-            {kind === 'comp' && <div className="dynhandle ci" style={{ left: w, top: endY }} title={`レシオ ${ratio}:1`} onPointerDown={drag('ratio')} />}
+            {gOn && <div className="dynhandle sq" style={{ left: px(gThr, w), top: h - px(outOf(gThr), h), borderColor: GATE_COLOR }}
+              title={`ゲートのしきい値 ${gThr} dB`} onPointerDown={drag('gthr')} />}
+            {cOn && <div className="dynhandle sq" style={{ left: px(cThr, w), top: h - px(outOf(cThr), h), borderColor: COMP_COLOR }}
+              title={`コンプのしきい値 ${cThr} dB`} onPointerDown={drag('cthr')} />}
+            {cOn && <div className="dynhandle ci" style={{ left: w, top: h - px(outOf(0), h), borderColor: COMP_COLOR }}
+              title={`レシオ ${ratio}:1`} onPointerDown={drag('ratio')} />}
             <div ref={dot} className="dyndot" />
           </>}
         </div>
@@ -532,12 +586,28 @@ function DynEditor({ kind, fx, player, track, index, onChange }: {
           <span ref={grText} className="mono">0.0 dB</span>
           <span className="hint">下げた量</span>
         </div>
+        <div className="dyncols">
+          <div className="dyncol">
+            <label className="onoff"><input type="checkbox" checked={gOn} onChange={e => onToggle('gate', e.target.checked)} />
+              <b style={{ color: GATE_COLOR }}>ゲート</b></label>
+            {gate && <Params fx={gate} onChange={onPut} rows={[
+              ['threshold_db', 'しきい値', -80, 0, 0.5, 'dB'], ['range_db', '下げる量', 0, 80, 1, 'dB'],
+              ['attack_ms', 'アタック', 0.1, 100, 0.1, 'ms', true], ['hold_ms', 'ホールド', 0, 500, 1, 'ms'], ['release_ms', 'リリース', 5, 2000, 1, 'ms', true]]} />}
+          </div>
+          <div className="dyncol">
+            <label className="onoff"><input type="checkbox" checked={cOn} onChange={e => onToggle('compressor', e.target.checked)} />
+              <b style={{ color: COMP_COLOR }}>コンプ</b></label>
+            {comp && <Params fx={comp} onChange={onPut} rows={[
+              ['threshold_db', 'しきい値', -60, 0, 0.5, 'dB'], ['ratio', 'レシオ', 1, 20, 0.1, ':1', true], ['knee', 'ニー', 0, 100, 1, ''],
+              ['attack_ms', 'アタック', 0.1, 200, 0.1, 'ms', true], ['release_ms', 'リリース', 5, 2000, 1, 'ms', true],
+              ['makeup_db', 'メイクアップ', -12, 24, 0.1, 'dB'], ['dry_mix', '原音を混ぜる', 0, 1, 0.01, '']]} />}
+          </div>
+        </div>
       </div>
       <div className="dynhist">
         <canvas ref={hist} />
         <div className="hint dynlegend"><span style={{ color: '#8B939E' }}>― 入る音</span><span style={{ color: '#5FD39A' }}>― 出る音</span><span style={{ color: '#C08A50' }}>■ 下げた量</span><span>直近 6 秒</span></div>
       </div>
-      <Params fx={fx} rows={rows} onChange={onChange} />
     </div>
   )
 }

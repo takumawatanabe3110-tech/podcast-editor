@@ -74,7 +74,7 @@ export class FxChain {
     const list = (effects ?? []) as Fx[]
     this.effects = list
     const sig = signature(list)
-    if (sig !== this.sig || this.built.some(b => b.kind === 'pending' && this.workletReady())) this.rebuild(list, sig)
+    if (sig !== this.sig || this.built.some(b => (b.kind === 'pending' || b.kind === 'limiter-dc') && this.workletReady())) this.rebuild(list, sig)
     else list.forEach((e, i) => this.update(this.built[i], e))
     this.applyMix()
   }
@@ -121,8 +121,16 @@ export class FxChain {
         return { kind: e.type, nodes: [node], worklet: node, meters }
       }
       case 'limiter': {
-        const c = ctx.createDynamicsCompressor() // 書き出しのリミッターの近似（先読みなし）
-        const b: Built = { kind: 'limiter', nodes: [c] }
+        if (this.workletReady()) { // 先読みのリミッター（書き出しと同じ考え方）
+          const node = new AudioWorkletNode(ctx, 'pod-limiter', {
+            numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [this.channels],
+            channelCount: this.channels, channelCountMode: 'explicit',
+            processorOptions: { params: { ceiling_db: Number(e.ceiling_db ?? -1), lookahead_ms: 3, release_ms: Number(e.release_ms ?? 50) } },
+          })
+          return { kind: 'limiter', nodes: [node], worklet: node }
+        }
+        const c = ctx.createDynamicsCompressor() // 読み込むまでの代わり（先読みなし。読み込んだら組み直す）
+        const b: Built = { kind: 'limiter-dc', nodes: [c] }
         this.update(b, e)
         return b
       }
@@ -151,7 +159,7 @@ export class FxChain {
       (b.nodes[0] as GainNode).gain.setTargetAtTime(dbToGain(Number(e.db ?? 0)), t, 0.01)
     } else if (b.worklet) {
       b.worklet.port.postMessage({ type: 'params', params: e })
-    } else if (b.kind === 'limiter') {
+    } else if (b.kind === 'limiter-dc') {
       const c = b.nodes[0] as DynamicsCompressorNode
       c.threshold.value = Number(e.ceiling_db ?? -1)
       c.knee.value = 0; c.ratio.value = 20; c.attack.value = 0.001

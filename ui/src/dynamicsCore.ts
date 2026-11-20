@@ -2,6 +2,7 @@
 // 0.25ms ごとのブロックでピークを見て、ブロックごとに音量を更新する。
 // エンジンは「ブロックのピークから出した音量を同じブロックに掛ける」ので、
 // ストリーミングでは出力を 1 ブロック遅らせて同じ結果にしている。
+// 音量はブロック間を直線（dB）でつなぐ（前のブロックの値 → 今のブロックの値）。
 
 import { compStaticGainDb } from './dsp'
 
@@ -33,7 +34,8 @@ abstract class DynamicsBase {
   protected ring: Float32Array[] = [] // チャンネルごとの 1 ブロック分の遅延
   protected pos = 0
   protected peak = 0
-  protected gainLin = 1 // 次に出力するブロックにかける音量（直前ブロックの分）
+  protected gFrom = 0 // 出力中のブロックの音量の始点（dB）＝1 つ前のブロックの値
+  protected gTo = 0 // 同じく終点（dB）＝そのブロック自身の値
   protected cur = 0 // なめらかにした音量（dB）
   protected started = false
   protected ca = 0
@@ -58,6 +60,8 @@ abstract class DynamicsBase {
 
   // 1 ブロック終わったときに音量を更新する
   protected abstract endBlock(peak: number): void
+  // dB を掛ける倍率にする（メイクアップはここ）
+  protected abstract gainOf(db: number): number
   // 遅延した音に音量をかける（dry_mix などはここ）
   protected abstract mix(delayed: number, gain: number): number
 
@@ -69,6 +73,9 @@ abstract class DynamicsBase {
     const block = this.block
     for (let i = 0; i < n; i++) {
       const p = this.pos
+      const gain = this.gainOf(
+        this.gFrom === this.gTo ? this.gFrom : this.gFrom + ((this.gTo - this.gFrom) * (p + 1)) / block,
+      )
       for (let c = 0; c < nch; c++) {
         const x = inputs[c][i]
         const ax = x < 0 ? -x : x
@@ -76,7 +83,7 @@ abstract class DynamicsBase {
         const ring = this.ring[c]
         const d = ring[p]
         ring[p] = x
-        outputs[c][i] = this.mix(d, this.gainLin)
+        outputs[c][i] = this.mix(d, gain)
       }
       if (++this.pos >= block) {
         this.pos = 0
@@ -111,7 +118,6 @@ export class CompressorCore extends DynamicsBase {
   constructor(fs: number, params?: CompressorParams) {
     super(fs)
     this.setParams(params ?? { threshold_db: -10, ratio: 4 })
-    this.gainLin = this.makeup
   }
 
   // 途中で変えても音量の状態（cur）は残す
@@ -133,11 +139,16 @@ export class CompressorCore extends DynamicsBase {
     const level = toDb(peak)
     const t = compStaticGainDb(level, this.thr, this.ratio, this.knee)
     const c = t < this.cur ? this.ca : this.cr // 下げるときはアタック
+    this.gFrom = this.cur
     this.cur = t + c * (this.cur - t)
-    this.gainLin = Math.pow(10, this.cur / 20) * this.makeup
+    this.gTo = this.cur
     this.lastInDb = level
     this.lastGainDb = this.cur
     this.lastOutDb = level + this.cur + this.makeupDb
+  }
+
+  protected gainOf(db: number): number {
+    return Math.pow(10, db / 20) * this.makeup
   }
 
   protected mix(d: number, g: number): number {
@@ -148,7 +159,7 @@ export class CompressorCore extends DynamicsBase {
   reset(): void {
     super.reset()
     this.cur = 0
-    this.gainLin = this.makeup
+    this.gFrom = this.gTo = 0
   }
 }
 
@@ -165,7 +176,7 @@ export class GateCore extends DynamicsBase {
     super(fs)
     this.setParams(params ?? { threshold_db: -50 })
     this.cur = -this.rng // 最初は閉じている
-    this.gainLin = Math.pow(10, this.cur / 20)
+    this.gFrom = this.gTo = this.cur
   }
 
   setParams(p: GateParams): void {
@@ -179,7 +190,7 @@ export class GateCore extends DynamicsBase {
     // まだ動き出す前なら、閉じた状態を新しい range に合わせる
     if (!this.started) {
       this.cur = -this.rng
-      this.gainLin = Math.pow(10, this.cur / 20)
+      this.gFrom = this.gTo = this.cur
     }
   }
 
@@ -196,11 +207,16 @@ export class GateCore extends DynamicsBase {
       t = -this.rng
     }
     const c = t > this.cur ? this.ca : this.cr // 開くときがアタック
+    this.gFrom = this.cur
     this.cur = t + c * (this.cur - t)
-    this.gainLin = Math.pow(10, this.cur / 20)
+    this.gTo = this.cur
     this.lastInDb = level
     this.lastGainDb = this.cur
     this.lastOutDb = level + this.cur
+  }
+
+  protected gainOf(db: number): number {
+    return Math.pow(10, db / 20)
   }
 
   protected mix(d: number, g: number): number {
@@ -211,6 +227,6 @@ export class GateCore extends DynamicsBase {
     super.reset()
     this.hold = 0
     this.cur = -this.rng
-    this.gainLin = Math.pow(10, this.cur / 20)
+    this.gFrom = this.gTo = this.cur
   }
 }

@@ -133,3 +133,38 @@ def test_gate_validate():
     assert validate([{"type": "gate", "threshold_db": -50}], "fx") == []
     assert validate([{"type": "gate"}], "fx")
     assert validate([{"type": "gate", "threshold_db": -50, "range_db": -1}], "fx")
+
+
+def _band_energy_db(x, lo, hi):
+    spec = np.abs(np.fft.rfft(x)) ** 2
+    f = np.fft.rfftfreq(len(x), 1 / FS)
+    return 10 * np.log10(spec[(f >= lo) & (f < hi)].sum() + 1e-20)
+
+
+def test_compressor_gain_ramp_removes_block_rate_buzz():
+    # 速いアタックで音量が階段になると 4kHz 付近に「ジリジリ」が出る。直線でつなげば出ない
+    t = np.arange(2 * FS) / FS
+    x = sum(np.sin(2 * np.pi * 200 * k * t) / k for k in range(1, 8)) * (0.6 + 0.4 * np.sin(2 * np.pi * 5 * t))
+    x = (x / np.abs(x).max() * 0.9).astype(np.float32)[None, :]
+    p = {"threshold_db": -10, "ratio": 4, "knee": 0, "attack_ms": 0.7, "release_ms": 93}
+    y = make_compressor(p, FS)(x)[0]
+
+    # 同じ音量の階段版を作る（検出と平滑化は本体と同じ式）
+    block = int(FS * 0.00025)
+    nb = len(t) // block
+    peak = np.abs(x[0, : nb * block]).reshape(nb, block).max(axis=1)
+    target = static_gain_db(20 * np.log10(np.maximum(peak, 1e-9)), -10, 4, 0.0)
+    ca, cr = np.exp(-block / (0.0007 * FS)), np.exp(-block / (0.093 * FS))
+    g, cur = np.empty(nb), 0.0
+    for i, tg in enumerate(target):
+        c = ca if tg < cur else cr
+        cur = tg + c * (cur - tg)
+        g[i] = cur
+    step = x[0] * (10 ** (np.repeat(g, block) / 20)).astype(np.float32)
+
+    ramp_buzz = _band_energy_db(y, 3500, 4500)
+    step_buzz = _band_energy_db(step, 3500, 4500)
+    print(f"3.5-4.5kHz: step {step_buzz:.1f} dB, ramp {ramp_buzz:.1f} dB")
+    assert step_buzz - ramp_buzz >= 10
+    # 声の帯域（0〜3kHz）は階段版と変わらない
+    assert abs(_band_energy_db(y, 0, 3000) - _band_energy_db(step, 0, 3000)) < 0.1

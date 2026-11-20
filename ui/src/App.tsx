@@ -4,7 +4,7 @@ import { BgmView, type ChangeOpts } from './BgmView'
 import { cutLines, refToOutOrNext, restoreLine } from './editops'
 import { EffectsView } from './EffectsView'
 import { Mixer, type ExportStatus } from './Mixer'
-import { Player } from './player'
+import { MASTER_ID, Player } from './player'
 import { usePlayhead } from './playhead'
 import { ScriptPanel } from './ScriptPanel'
 import { clamp, Splitter, useLayout } from './layout'
@@ -165,7 +165,14 @@ export default function App() {
   }, [transcript, lines])
 
   const seekRef = useCallback((t: number) => { if (project) player.seek(refToOutOrNext(project.edit, t)) }, [project, player])
-  const setSolo = useCallback((s: Set<string>) => { setSoloState(s); player.setSolo(s) }, [player])
+  const setSolo = useCallback((s: Set<string>) => setSoloState(s), [])
+  // エフェクト画面では、選んだトラックだけを鳴らす（マスターは全部）。ほかの画面ではミキサーのソロ
+  const [fxTrack, setFxTrack] = useState<string | null>(null)
+  useEffect(() => {
+    if (screen !== 'fx') { player.setSolo(solo); return }
+    const t = fxTrack ?? projectRef.current?.voices[0]?.source ?? MASTER_ID
+    player.setSolo(t === MASTER_ID ? new Set() : new Set([t]))
+  }, [screen, fxTrack, solo, player])
 
   // ---- 書き出し：保存を済ませてから始め、終わるまで1秒ごとに様子を見る
   const startExport = useCallback(async () => {
@@ -193,9 +200,16 @@ export default function App() {
       // Ctrl+S：台本の欄を開け閉め（文字を直している最中でも効く）
       if (e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 's') { e.preventDefault(); setLayout({ scriptOpen: !layout.scriptOpen }); return }
       const el = e.target as HTMLElement
+      // Space：文字を打つ欄（台本の編集・検索など）以外なら、どこにいても再生／一時停止。
+      // スライダーやボタンを触った直後でも効くように、その部品から操作を外す（ボタンが押されないように）
+      if (e.code === 'Space' && !el.closest('textarea, select, [contenteditable], input[type=text], input[type=search], input:not([type])')) {
+        e.preventDefault()
+        if (el !== document.body) el.blur()
+        if (!e.repeat) player.toggle()
+        return
+      }
       if (el.closest('input, textarea, select, [contenteditable]')) return
-      if (e.code === 'Space') { e.preventDefault(); player.toggle() }
-      else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo() }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo() }
       else if (screen === 'edit' && (e.key === 'Delete' || e.key === 'Backspace')) { if (selected.length) { e.preventDefault(); cutSelected() } }
       else if (e.key === 'Escape') { setSelected([]); setHelp(false) }
       else if (e.key === '?') setHelp(h => !h)
@@ -279,7 +293,7 @@ export default function App() {
         <div className="body bgmbody">
           <main className="main" style={{ overflow: 'hidden' }}>
             <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef} />
-            <EffectsView project={project} player={player} colors={COLORS} onChange={update} denoiseBusy={denoiseBusy} />
+            <EffectsView project={project} player={player} colors={COLORS} onChange={update} denoiseBusy={denoiseBusy} track={fxTrack} setTrack={setFxTrack} />
           </main>
         </div>
       ) : (
@@ -325,7 +339,9 @@ const HELP: Record<'common' | Screen, [string, string][]> = {
     ['目盛りをダブルクリック', '表示を元に戻す'],
   ],
   fx: [
+    ['トラックを選ぶ', 'そのトラックだけ鳴らす（マスターは全部）'],
     ['処理前／処理後', 'エフェクトとノイズ除去をかけない音と聴き比べ'],
+    ['順番', 'EQ とダイナミクスのどちらを先にかけるか'],
     ['EQ の点を左右', '周波数'],
     ['EQ の点を上下', '量（dB）'],
     ['ホイール・Alt＋ドラッグ', 'ベルの幅（Q）'],

@@ -42,6 +42,7 @@ export class Player {
   private masterGain: GainNode
   private trim: GainNode
   private trimSet = false
+  private outMeter!: AnalyserNode
   private startCtx = 0 // 再生を始めた ctx.currentTime（LEAD 込み）
   private startOut = 0 // そのときの出力時刻
   private pausedAt = 0
@@ -64,10 +65,20 @@ export class Player {
     const fx = new FxChain(this.ctx, () => this.workletLoaded, 2)
     this.masterGain.connect(fx.input)
     fx.output.connect(this.trim).connect(limiter).connect(meter).connect(this.ctx.destination)
+    this.outMeter = meter
     this.strips.set(MASTER_ID, { gain: this.masterGain, fx, meter })
     // コンプ・ゲート（エンジンと同じ計算）を読み込む。読み込むまでは素通し
     this.ctx.audioWorklet.addModule(workletUrl).then(() => {
       this.workletLoaded = true
+      // 音割れ防止を、先読みのリミッター（上限 −1 dBFS）に置き換える。
+      // DynamicsCompressor は急な音に間に合わず、フェーダーを上げると 0 dB を超えてジリジリしていた
+      const brick = new AudioWorkletNode(this.ctx, 'pod-limiter', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit',
+        processorOptions: { params: { ceiling_db: -1, lookahead_ms: 3, release_ms: 80 } },
+      })
+      this.trim.disconnect()
+      limiter.disconnect()
+      this.trim.connect(brick).connect(this.outMeter)
       if (this.project) this.updateMix(this.project)
     }, e => console.error('コンプ・ゲートを読み込めませんでした', e))
   }
