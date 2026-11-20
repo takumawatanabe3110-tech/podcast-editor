@@ -64,7 +64,7 @@ def test_render_applies_loudness_by_default(tmp_path, capsys):
     paths = [str(tmp_path / f"v{i}.wav") for i in range(2)]
     write_session(paths, waves, FS)
     proj = tmp_path / "ep.podproj"
-    cli.main(["init", *paths, "--out", str(proj)])
+    cli.main(["init", *paths, "--out", str(proj), "--no-denoise"])
     assert cli.main(["render", str(proj), "--out", str(tmp_path / "ep.wav")]) == 0
     x, fs = sf.read(tmp_path / "ep.wav", dtype="float32")
     assert integrated_loudness(x.T, fs) == pytest.approx(-14.0, abs=0.1)  # 初期値は -14 LUFS

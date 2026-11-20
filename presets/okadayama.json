@@ -1,0 +1,105 @@
+{
+  "format": "podpreset",
+  "version": 1,
+  "name": "okadayama",
+  "description": "岡田山ラジオのいつもの設定。9/25 回（Resolve）から読み取った値＋現在のミキサー設定（BGMコンプは 9/25 の後に追加）",
+
+  "edit": {
+    "start_after_clap_sec": 0.6,
+    "position": 8.757,
+    "crossfade_ms": 10,
+    "end_after_speech_sec": 1.3
+  },
+
+  "denoise": {"method": "deepfilternet", "atten_lim_db": null},
+
+  "corrections": {
+    "施設図書館の内田立郎": "私設図書館ルチャ・リブロ",
+    "図書館の内田立郎": "図書館ルチャ・リブロ",
+    "内田達郎": "内田樹",
+    "内田立郎": "内田樹",
+    "新平": "真兵",
+    "施設図書館": "私設図書館",
+    "ルチャリブロ": "ルチャ・リブロ",
+    "小辺女学院": "神戸女学院",
+    "オムライスラジオ": "オムライスラヂオ",
+    "ムライスラジオ": "オムライスラヂオ",
+    "村井スラジオ": "オムライスラヂオ"
+  },
+
+  "voices": [
+    {
+      "name": "青木さん",
+      "target_lufs": -13.6,
+      "effects": [
+        {"type": "eq", "bands": [
+          {"type": "highpass", "freq": 104},
+          {"type": "lowshelf", "freq": 176, "gain_db": 3.0},
+          {"type": "bell", "freq": 239, "gain_db": 0.0, "q": 1.0},
+          {"type": "bell", "freq": 3000, "gain_db": 3.0, "q": 1.0},
+          {"type": "highshelf", "freq": 5000, "gain_db": 0.0}
+        ]},
+        {"type": "gain", "db": 5.0}
+      ]
+    },
+    {
+      "name": "内田さん",
+      "target_lufs": -13.6,
+      "effects": [
+        {"type": "eq", "bands": [
+          {"type": "highpass", "freq": 104},
+          {"type": "lowshelf", "freq": 200, "gain_db": 3.4},
+          {"type": "bell", "freq": 509, "gain_db": -0.2, "q": 1.0},
+          {"type": "bell", "freq": 3000, "gain_db": 3.0, "q": 1.0},
+          {"type": "highshelf", "freq": 5000, "gain_db": 0.0}
+        ]},
+        {"type": "gain", "db": 5.0}
+      ]
+    }
+  ],
+  "default_voice": {
+    "name": "ゲスト",
+    "target_lufs": -13.6,
+    "effects": [{"type": "gain", "db": 5.0}]
+  },
+
+  "bgm": [
+    {
+      "source": "op",
+      "path": "../サンプルファイル/BGM/Gakuinka (1).mp3",
+      "anchor": "voice_start",
+      "at": -8.757,
+      "duration": 103.0,
+      "keyframes": [
+        {"anchor": "voice_start", "t": -0.507, "db": 0.9},
+        {"anchor": "voice_start", "t": 1.701, "db": -14.458},
+        {"anchor": "clip_end", "t": -0.667, "db": -14.162},
+        {"anchor": "clip_end", "t": -0.208, "db": -3.340}
+      ]
+    },
+    {
+      "source": "ed",
+      "path": "../サンプルファイル/BGM/Beauty_Becomes_a_College (1).mp3",
+      "anchor": "voice_end",
+      "at": -60.083,
+      "duration": 72.9,
+      "gain_db": -5.4,
+      "fade_in": 1.0,
+      "fade_out": 8.985,
+      "fade_out_curve": 2.0
+    }
+  ],
+
+  "bgm_effects": [
+    {"type": "compressor", "threshold_db": -25, "ratio": 20, "knee": 49,
+     "attack_ms": 1.4, "release_ms": 93, "makeup_db": 0, "dry_mix": 0}
+  ],
+  "master_effects": [
+    {"type": "compressor", "threshold_db": -10, "ratio": 4, "knee": 0,
+     "attack_ms": 0.7, "release_ms": 93, "makeup_db": 0, "dry_mix": 0},
+    {"type": "gain", "db": 3.2}
+  ],
+
+  "output": {"sample_rate": 48000, "channels": 2, "mp3_kbps": 128,
+             "loudness_lufs": -14.0, "true_peak_dbtp": -1.0}
+}

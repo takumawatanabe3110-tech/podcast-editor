@@ -19,3 +19,4 @@ dist/
 *.drp
 *.egg-info/
 .pytest_cache/
+.podcache/

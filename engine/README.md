@@ -7,7 +7,8 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -U pip   # Mac標準のpipは古く、次の行が失敗するため
-.venv/bin/pip install -e "engine[dev]"
+.venv/bin/pip install -e "engine[dev,denoise,transcribe]"   # denoise＝ノイズ除去（PyTorch）、transcribe＝文字起こし（mlx-whisper）
+# 初回の文字起こしで Whisper large-v3-turbo（約1.6GB）を自動ダウンロードする
 ```
 
 ## 使い方
@@ -19,6 +20,21 @@ cd engine
 ```
 
 `sync` は1本目を基準に、各トラックのずれ（秒）とドリフト（ppm）を JSON で出す。
+
+### いつもの設定で1本仕上げる（トークン不要）
+
+```bash
+../.venv/bin/python -m podcast_engine init 青木.wav 内田.wav --preset okadayama --out 回.podproj
+../.venv/bin/python -m podcast_engine transcribe 回.podproj   # 文字起こし（21分で約6分）。話の終わりも自動で切る
+../.venv/bin/python -m podcast_engine render 回.podproj --out 回.mp3
+```
+
+`transcribe` は `回.transcript.txt`（台本：話者・時刻・フィラー抜きの文）と
+`回.transcript.json`（ルビ用：1文字ごとの時刻、フィラーの印つき）を作る。
+
+`--preset okadayama` で `presets/okadayama.json` の設定（声の音量の自動調整、EQ、フェーダー、コンプ、ノイズ除去、
+OP/ED の BGM の置き方、−14 LUFS）がまとめて入る。素材は「青木さん、内田さん、（ゲスト）」の順に並べる。
+話の終わりは、`transcribe` が最後の言葉の 1.3 秒後で切る（ED の BGM もついてくる）。
 
 ### プロジェクトを作って書き出す
 
@@ -32,6 +48,7 @@ cd engine
 `.podproj` は JSON。音量・BGM などは直接書き換える（形式は `podcast_engine/project.py`）。
 EQ・コンプは `voices[].effects`／`bgm_effects`／`master_effects` に書く（書き方は `podcast_engine/effects.py` の先頭）。
 元の音声は書き換えない（非破壊）。
+ノイズ除去の結果は `.podproj` と同じフォルダの `.podcache/` に保存される（1トラック数百MB。消しても次の書き出しで作り直す）。
 
 ## テスト
 

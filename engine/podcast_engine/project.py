@@ -19,6 +19,10 @@ from typing import Dict, List, Optional, Tuple
 
 FORMAT = "podproj"
 VERSION = 1
+CACHE_DIR = ".podcache"  # 重い処理の結果を置くフォルダ（.podproj と同じ場所）
+
+# 新しいプロジェクトの声トラックに付けるノイズ除去（9/25 の聴き比べで「強」を採用）
+DEFAULT_DENOISE = {"method": "deepfilternet", "atten_lim_db": None}
 
 
 @dataclass
@@ -52,6 +56,8 @@ class Voice:
     gain_db: float = 0.0
     pan: float = 0.0  # -1 左 〜 +1 右
     mute: bool = False
+    # ノイズ除去（denoise.py）。素材全体にかけてキャッシュする。None ならかけない
+    denoise: Optional[dict] = None
     effects: List[dict] = field(default_factory=list)  # EQ・コンプなど（effects.py）。音量の後、パンの前
 
 
@@ -70,6 +76,8 @@ class Edit:
     position: float = 0.0  # 最初の区間を置く出力時刻（OPのBGMだけ先に流す場合など）
     segments: List[Segment] = field(default_factory=list)
     crossfade_ms: float = 10.0  # 区間のつなぎ目のクロスフェード（プツッという音を防ぐ）
+    # 文字起こしの後、最後の言葉の何秒後で切るか（None なら切らない）。transcribe コマンドが使う
+    end_after_speech_sec: Optional[float] = None
 
     def layout(self) -> List[Tuple[float, Segment]]:
         """各区間の出力時刻での開始位置。つなぎ目ではクロスフェードの分だけ重ねる。"""
@@ -123,10 +131,13 @@ class Keyframe:
     db: float
 
 
+BGM_ANCHORS = ("output_start", "voice_start", "voice_end")
+
+
 @dataclass
 class BgmClip:
     source: str
-    at: float  # 出力時刻
+    at: float  # 置く位置（秒）。anchor からの相対。anchor が output_start なら出力時刻そのもの
     duration: float
     offset_in: float = 0.0  # 素材のどこから使うか（秒）
     gain_db: float = 0.0
@@ -137,6 +148,8 @@ class BgmClip:
     fade_in_curve: float = 1.0
     fade_out_curve: float = 1.0
     keyframes: List[Keyframe] = field(default_factory=list)  # gain_db に足す音量カーブ（dB）
+    # 位置の基準。voice_start＝最初の声、voice_end＝最後の声（カットや話の終わりの調整についてくる）
+    anchor: str = "output_start"
 
 
 @dataclass
@@ -162,6 +175,8 @@ class Project:
     bgm_effects: List[dict] = field(default_factory=list)  # BGM トラック全体にかけるエフェクト
     master_effects: List[dict] = field(default_factory=list)  # 全体（Resolve の Bus 1）にかけるエフェクト
     output: Output = field(default_factory=Output)
+    # 文字起こしの言い換え（聞き間違いやすい番組名・人名など）。例 {"村井スラジオ": "オムライスラヂオ"}
+    corrections: Dict[str, str] = field(default_factory=dict)
 
     # ---- 読み書き
 
@@ -190,7 +205,9 @@ class Project:
                 position=float(e.get("position", 0.0)),
                 segments=[Segment(**x) for x in e.get("segments", [])],
                 crossfade_ms=float(e.get("crossfade_ms", 10.0)),
+                end_after_speech_sec=e.get("end_after_speech_sec"),
             ),
+            corrections=dict(d.get("corrections", {})),
             bgm=[
                 BgmClip(**{**b, "keyframes": [Keyframe(**k) for k in b.get("keyframes", [])]})
                 for b in d.get("bgm", [])
@@ -208,6 +225,19 @@ class Project:
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
     # ---- 便利関数
+
+    def anchor_time(self, anchor: str) -> float:
+        if anchor == "voice_start":
+            return self.edit.position
+        if anchor == "voice_end":
+            return self.edit.output_end
+        if anchor == "output_start":
+            return 0.0
+        raise ValueError(f"基準 {anchor!r} には対応していません（{' / '.join(BGM_ANCHORS)}）")
+
+    def bgm_start(self, clip: "BgmClip") -> float:
+        """BGM クリップの出力時刻での開始位置。"""
+        return self.anchor_time(clip.anchor) + clip.at
 
     def source_path(self, source_id: str, base_dir: str | Path) -> Path:
         p = Path(self.sources[source_id].path)
@@ -229,6 +259,8 @@ class Project:
                 errs.append(f"bgm: 素材 {b.source!r} が sources にありません")
             if b.duration <= 0:
                 errs.append(f"bgm: {b.source!r} の duration が 0 以下です")
+            if b.anchor not in BGM_ANCHORS:
+                errs.append(f"bgm: {b.source!r} の anchor {b.anchor!r} は使えません（{' / '.join(BGM_ANCHORS)}）")
         if self.voices and self.sync.reference not in self.sources:
             errs.append("sync.reference が sources にありません")
         xf = self.edit.crossfade_ms / 1000

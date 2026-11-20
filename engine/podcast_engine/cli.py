@@ -2,7 +2,8 @@
 
     python -m podcast_engine info  FILE...
     python -m podcast_engine sync  FILE... [--ref 0] [--out sync.json]
-    python -m podcast_engine init  FILE... --out x.podproj [--names 青木さん 内田さん]
+    python -m podcast_engine init  FILE... --out x.podproj [--preset okadayama] [--names 青木さん 内田さん]
+    python -m podcast_engine transcribe x.podproj [--trim-end 0.8]
     python -m podcast_engine cut   x.podproj START END [--output-time]
     python -m podcast_engine render x.podproj --out x.mp3
 """
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import audio_io
-from .project import Project, Segment, Source, Sync, TrackOffset, Voice
+from .project import DEFAULT_DENOISE, Project, Segment, Source, Sync, TrackOffset, Voice
 from .sync import sync_tracks
 
 
@@ -95,7 +96,10 @@ def cmd_init(args) -> int:
         except ValueError:
             pass
         p.sources[sid] = Source(path=str(rel), kind="voice")
-        p.voices.append(Voice(source=sid, name=names[i] if i < len(names) else sid))
+        p.voices.append(Voice(
+            source=sid, name=names[i] if i < len(names) else sid,
+            denoise=None if args.no_denoise else dict(DEFAULT_DENOISE),
+        ))
     p.sync = Sync(
         reference=ids[0],
         tracks={
@@ -114,8 +118,24 @@ def cmd_init(args) -> int:
         start = max(start, -t.offset_sec / k)
         end = min(end, (d - t.offset_sec) / k)
     p.edit.segments = [Segment(round(start, 6), round(end, 6))]
+
+    notes = []
+    if args.preset:
+        from .presets import apply_preset, load_preset
+
+        preset, preset_dir = load_preset(args.preset)
+        notes = apply_preset(p, preset, preset_dir, base, r.clap_time_ref_sec, names_given=bool(names))
+    if args.no_denoise:
+        for v in p.voices:
+            v.denoise = None
+    errs = p.validate()
+    if errs:
+        print("プロジェクトに問題があります：\n" + "\n".join(errs), file=sys.stderr)
+        return 1
     p.save(out)
-    print(f"{out} を作りました（{len(ids)} トラック、{end - start:.1f} 秒）", file=sys.stderr)
+    print(f"{out} を作りました（{len(ids)} トラック、出力 {p.edit.output_end:.1f} 秒まで声）", file=sys.stderr)
+    for n in notes:
+        print(f"  {n}", file=sys.stderr)
     return 0
 
 
@@ -132,6 +152,34 @@ def cmd_cut(args) -> int:
     p.edit.cut(a, b)
     p.save(args.project)
     print(f"基準時刻 {a:.3f}〜{b:.3f} 秒をカット（全体 {before:.1f} → {p.edit.output_end:.1f} 秒）", file=sys.stderr)
+    return 0
+
+
+def cmd_transcribe(args) -> int:
+    """文字起こしをして .transcript.json（ルビ用）と .transcript.txt（台本）を作る。話の終わりも切る。"""
+    from .transcribe import transcribe_project
+
+    proj = Path(args.project)
+    p = Project.load(proj)
+    base = proj.resolve().parent
+    tr = transcribe_project(p, base, log=lambda s: print(s, file=sys.stderr))
+    stem = proj.with_suffix("")
+    tr.save(f"{stem}.transcript.json")
+    Path(f"{stem}.transcript.txt").write_text(tr.script_text(), encoding="utf-8")
+    n = len(tr.utterances)
+    print(f"{stem}.transcript.json / .txt を作りました（発言 {n}）", file=sys.stderr)
+
+    pad = args.trim_end if args.trim_end is not None else p.edit.end_after_speech_sec
+    end = tr.speech_end
+    if pad is not None and end is not None and p.edit.segments:
+        last = p.edit.segments[-1]
+        new_end = round(end + pad, 3)
+        if last.start < new_end < last.end:
+            before = p.edit.output_end
+            last.end = new_end
+            p.save(proj)
+            print(f"話の終わり（基準時刻 {end:.2f} 秒）の {pad} 秒後で切りました"
+                  f"（声の終わり {before:.1f} → {p.edit.output_end:.1f} 秒。ED の BGM もついてきます）", file=sys.stderr)
     return 0
 
 
@@ -181,6 +229,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--out", required=True, help="作る .podproj")
     p.add_argument("--names", nargs="*", help="話者名（素材の順）")
     p.add_argument("--name", help="プロジェクト名")
+    p.add_argument("--no-denoise", action="store_true", help="声トラックにノイズ除去を付けない")
+    p.add_argument("--preset", help="いつもの設定（presets/ のファイル名、または .json のパス）。例：okadayama")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("cut", help="区間をカットする（既定は基準時刻）")
@@ -189,6 +239,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("end")
     p.add_argument("--output-time", action="store_true", help="時刻を完成版（出力）の時刻として扱う")
     p.set_defaults(func=cmd_cut)
+
+    p = sub.add_parser("transcribe", help="文字起こし（台本とルビ）。話の終わりも切る")
+    p.add_argument("project")
+    p.add_argument("--trim-end", type=float, help="最後の言葉の何秒後で切るか（プリセットの値より優先）")
+    p.set_defaults(func=cmd_transcribe)
 
     p = sub.add_parser("render", help="完成版を書き出す（.mp3 / .wav）")
     p.add_argument("project")

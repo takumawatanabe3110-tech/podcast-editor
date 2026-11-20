@@ -1,12 +1,12 @@
 """プロジェクトから完成版の音声を組み立てて書き出す。
 
 処理順（Resolve / Fairlight の流れに合わせる）
-  声トラックごと：同期 → カット（区間をつなぐ）→ 音量 → エフェクト（EQ・コンプ）→ パン
+  声トラックごと：ノイズ除去（素材全体、キャッシュ）→ 同期 → カット（区間をつなぐ）→ 音量
+                  → エフェクト（EQ・コンプ）→ パン
   BGM：クリップごとに位置・音量カーブ・フェード → BGM トラックのエフェクト
   全体：声＋BGM を足す → マスターのエフェクト（Bus 1）
         → ラウドネスを output.loudness_lufs にそろえ、リミッターでトゥルーピークを抑える
         → WAV / MP3 に書き出す
-ノイズ除去は、まだ入っていない（フェーズ3の残り）。
 """
 
 from __future__ import annotations
@@ -66,6 +66,11 @@ def render_voice(project: Project, voice: Voice, base_dir: str | Path, length: i
     """1本の声トラックを、同期とカットを反映して出力時刻に並べる（モノラル、音量・パン前）。"""
     fs = project.sample_rate
     path = project.source_path(voice.source, base_dir)
+    if voice.denoise:  # ノイズ除去済みの素材（キャッシュ）に差し替える。時刻は元の素材と同じ
+        from .denoise import denoised_path
+        from .project import CACHE_DIR
+
+        path = denoised_path(path, voice.denoise, Path(base_dir) / CACHE_DIR)
     inf = audio_io.info(path)
     off = project.sync.offset(voice.source)
     xf = int(round(project.edit.crossfade_ms / 1000 * fs))
@@ -134,7 +139,7 @@ def render(project: Project, base_dir: str | Path) -> tuple:
     ch = project.output.channels
     end = project.edit.output_end if project.voices else 0.0
     for c in project.bgm:
-        end = max(end, c.at + c.duration)
+        end = max(end, project.bgm_start(c) + c.duration)
     length = int(round(end * fs))
     mix = np.zeros((ch, length), dtype=np.float32)
 
@@ -155,9 +160,12 @@ def render(project: Project, base_dir: str | Path) -> tuple:
         bus = np.zeros_like(mix)
         for c in project.bgm:
             y = render_bgm(project, c, base_dir, ch)
-            a = int(round(c.at * fs))
+            a = int(round(project.bgm_start(c) * fs))
+            if a < 0:  # 出力の 0 秒より前に始まる分は切り捨てる
+                y, a = y[:, -a:], 0
             b = min(length, a + y.shape[1])
-            bus[:, a:b] += y[:, : b - a]
+            if b > a:
+                bus[:, a:b] += y[:, : b - a]
         if project.bgm_effects:
             bus = make_chain(project.bgm_effects, fs)(bus)
         mix += bus

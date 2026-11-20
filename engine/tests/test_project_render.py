@@ -153,7 +153,10 @@ def test_cli_init_cut_render(tmp_path):
     paths = _session(tmp_path, [1.0, 2.0], duration=30, clap_at=5.0)
     proj = tmp_path / "ep.podproj"
     assert cli.main(["init", *map(str, paths), "--out", str(proj), "--names", "青木さん", "内田さん"]) == 0
+    assert Project.load(proj).voices[0].denoise == {"method": "deepfilternet", "atten_lim_db": None}  # 初期値
+    assert cli.main(["init", *map(str, paths), "--out", str(proj), "--names", "青木さん", "内田さん", "--no-denoise"]) == 0
     p = Project.load(proj)
+    assert p.voices[0].denoise is None
     assert [v.name for v in p.voices] == ["青木さん", "内田さん"]
     assert p.sources["voice1"].path == "v0.wav"  # .podproj からの相対パス
     assert p.sync.tracks["voice2"].offset_sec == pytest.approx(-1.0, abs=0.001)

@@ -19,6 +19,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ノイズ除去。DeepFilterNet は新しい torchaudio と合わないので版を固定
+denoise = ["deepfilternet", "torch==2.0.1", "torchaudio==2.0.2"]
+transcribe = ["mlx-whisper"]  # Apple Silicon の Mac のみ
 dev = ["pytest", "zstandard", "pyloudnorm"]  # pyloudnorm はラウドネス測定の照合テスト用
 
 [tool.pytest.ini_options]
