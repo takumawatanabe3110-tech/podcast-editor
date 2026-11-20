@@ -1,8 +1,10 @@
 """プロジェクトから完成版の音声を組み立てて書き出す。
 
-処理順：声トラックごとに「同期 → カット（区間をつなぐ）→ 音量 → パン」→ 全トラックを足す
-        → BGM（位置・音量カーブ・フェード）を足す → WAV / MP3 に書き出す
-エフェクト（ノイズ除去・EQ・コンプ）とラウドネス調整はフェーズ3で、この流れの途中に入れる。
+処理順（Resolve / Fairlight の流れに合わせる）
+  声トラックごと：同期 → カット（区間をつなぐ）→ 音量 → エフェクト（EQ・コンプ）→ パン
+  BGM：クリップごとに位置・音量カーブ・フェード → BGM トラックのエフェクト
+  全体：声＋BGM を足す → マスターのエフェクト（Bus 1）→ WAV / MP3 に書き出す
+ノイズ除去とラウドネス調整は、まだ入っていない（フェーズ3の残り）。
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Optional
 import numpy as np
 
 from . import audio_io
+from .effects import make_chain
 from .project import BgmClip, Project, Voice
 
 
@@ -133,6 +136,8 @@ def render(project: Project, base_dir: str | Path) -> tuple:
         if v.mute:
             continue
         x = render_voice(project, v, base_dir, length) * _db(v.gain_db)
+        if v.effects:
+            x = make_chain(v.effects, fs)(x[None, :])[0]
         if ch == 1:
             mix[0] += x
         else:  # 等パワーのパン（中央で各チャンネル -3dB）
@@ -140,11 +145,20 @@ def render(project: Project, base_dir: str | Path) -> tuple:
             mix[0] += x * np.cos(ang)
             mix[1] += x * np.sin(ang)
 
-    for c in project.bgm:
-        y = render_bgm(project, c, base_dir, ch)
-        a = int(round(c.at * fs))
-        b = min(length, a + y.shape[1])
-        mix[:, a:b] += y[:, : b - a]
+    if project.bgm:
+        bus = np.zeros_like(mix)
+        for c in project.bgm:
+            y = render_bgm(project, c, base_dir, ch)
+            a = int(round(c.at * fs))
+            b = min(length, a + y.shape[1])
+            bus[:, a:b] += y[:, : b - a]
+        if project.bgm_effects:
+            bus = make_chain(project.bgm_effects, fs)(bus)
+        mix += bus
+        del bus
+
+    if project.master_effects:
+        mix = make_chain(project.master_effects, fs)(mix)
 
     peak = float(np.max(np.abs(mix))) if mix.size else 0.0
     report = RenderReport(

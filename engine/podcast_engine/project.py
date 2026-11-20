@@ -52,6 +52,7 @@ class Voice:
     gain_db: float = 0.0
     pan: float = 0.0  # -1 左 〜 +1 右
     mute: bool = False
+    effects: List[dict] = field(default_factory=list)  # EQ・コンプなど（effects.py）。音量の後、パンの前
 
 
 @dataclass
@@ -154,6 +155,8 @@ class Project:
     voices: List[Voice] = field(default_factory=list)
     edit: Edit = field(default_factory=Edit)
     bgm: List[BgmClip] = field(default_factory=list)
+    bgm_effects: List[dict] = field(default_factory=list)  # BGM トラック全体にかけるエフェクト
+    master_effects: List[dict] = field(default_factory=list)  # 全体（Resolve の Bus 1）にかけるエフェクト
     output: Output = field(default_factory=Output)
 
     # ---- 読み書き
@@ -188,6 +191,8 @@ class Project:
                 BgmClip(**{**b, "keyframes": [Keyframe(**k) for k in b.get("keyframes", [])]})
                 for b in d.get("bgm", [])
             ],
+            bgm_effects=list(d.get("bgm_effects", [])),
+            master_effects=list(d.get("master_effects", [])),
             output=Output(**d.get("output", {})),
         )
 
@@ -206,10 +211,15 @@ class Project:
 
     def validate(self) -> List[str]:
         """矛盾があれば日本語のメッセージを返す（空なら問題なし）。"""
+        from . import effects
+
         errs = []
-        for v in self.voices:
+        for i, v in enumerate(self.voices):
             if v.source not in self.sources:
                 errs.append(f"voices: 素材 {v.source!r} が sources にありません")
+            errs += effects.validate(v.effects, f"voices[{i}].effects")
+        errs += effects.validate(self.bgm_effects, "bgm_effects")
+        errs += effects.validate(self.master_effects, "master_effects")
         for b in self.bgm:
             if b.source not in self.sources:
                 errs.append(f"bgm: 素材 {b.source!r} が sources にありません")

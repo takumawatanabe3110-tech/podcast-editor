@@ -30,6 +30,7 @@ cd engine
 ```
 
 `.podproj` は JSON。音量・BGM などは直接書き換える（形式は `podcast_engine/project.py`）。
+EQ・コンプは `voices[].effects`／`bgm_effects`／`master_effects` に書く（書き方は `podcast_engine/effects.py` の先頭）。
 元の音声は書き換えない（非破壊）。
 
 ## テスト
