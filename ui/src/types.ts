@@ -28,6 +28,7 @@ export interface Project {
   sources: Record<string, Source>; sync: Sync; voices: Voice[]; edit: Edit
   bgm: BgmClip[]; bgm_effects: unknown[]; master_effects: unknown[]
   output: Record<string, unknown>; corrections: Record<string, string>
+  preset?: string // 作るときに使ったプリセットの名前（なければ空）
 }
 export interface Derived {
   output_end: number

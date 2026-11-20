@@ -5,6 +5,7 @@ import { cutLines, refToOutOrNext, restoreLine } from './editops'
 import { EffectsView } from './EffectsView'
 import { Mixer, type ExportStatus } from './Mixer'
 import { MASTER_ID, Player } from './player'
+import type { PresetCtx } from './presetctx'
 import { usePlayhead } from './playhead'
 import { ScriptPanel } from './ScriptPanel'
 import { clamp, Splitter, useLayout } from './layout'
@@ -175,6 +176,26 @@ export default function App() {
   }, [screen, fxTrack, solo, player])
 
   // ---- 書き出し：保存を済ませてから始め、終わるまで1秒ごとに様子を見る
+  // ---- いつもの設定（プリセット）
+  const [presetNames, setPresetNames] = useState<string[]>([])
+  const [presetPick, setPresetPick] = useState<string | null>(null)
+  const [presetData, setPresetData] = useState<api.Preset | null>(null)
+  const presetCurrent = presetPick ?? (project?.preset || presetNames[0] || null)
+  useEffect(() => { api.listPresets().then(l => setPresetNames(l.map(x => x.name)), () => setPresetNames([])) }, [])
+  const reloadPreset = useCallback(async () => {
+    if (!presetCurrent) { setPresetData(null); return }
+    try { setPresetData(await api.getPreset(presetCurrent)) } catch { setPresetData(null) }
+  }, [presetCurrent])
+  useEffect(() => { void reloadPreset() }, [reloadPreset])
+  /** 画面の変更をサーバーに保存し終える（プリセットに書き込む前に） */
+  const flush = useCallback(async () => {
+    const p = projectRef.current
+    if (!p) return
+    window.clearTimeout(saveTimer.current)
+    await api.putProject(p); setSave('saved')
+  }, [])
+  const presetCtx: PresetCtx = { names: presetNames, current: presetCurrent, setCurrent: setPresetPick, data: presetData, reload: reloadPreset, flush }
+
   const startExport = useCallback(async () => {
     const p = projectRef.current
     if (!p) return
@@ -293,14 +314,14 @@ export default function App() {
         <div className="body bgmbody">
           <main className="main" style={{ overflow: 'hidden' }}>
             <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef} />
-            <EffectsView project={project} player={player} colors={COLORS} onChange={update} denoiseBusy={denoiseBusy} track={fxTrack} setTrack={setFxTrack} />
+            <EffectsView project={project} player={player} colors={COLORS} onChange={update} denoiseBusy={denoiseBusy} track={fxTrack} setTrack={setFxTrack} preset={presetCtx} />
           </main>
         </div>
       ) : (
         <div className="body bgmbody">
           <main className="main" style={{ overflow: 'hidden' }}>
             <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef} />
-            <BgmView project={project} player={player} peaks={peaks} colors={COLORS} utterances={transcript?.utterances ?? []}
+            <BgmView project={project} player={player} peaks={peaks} colors={COLORS} utterances={transcript?.utterances ?? []} preset={presetCtx}
               onChange={update} layout={layout} setLayout={setLayout} />
           </main>
         </div>

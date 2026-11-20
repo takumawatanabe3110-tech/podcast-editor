@@ -121,9 +121,10 @@ def cmd_init(args) -> int:
 
     notes = []
     if args.preset:
-        from .presets import apply_preset, load_preset
+        from .presets import apply_preset, find_preset, load_preset
 
         preset, preset_dir = load_preset(args.preset)
+        p.preset = find_preset(args.preset).stem
         notes = apply_preset(p, preset, preset_dir, base, r.clap_time_ref_sec, names_given=bool(names))
     if args.no_denoise:
         for v in p.voices:

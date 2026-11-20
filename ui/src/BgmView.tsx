@@ -7,6 +7,8 @@ import {
 } from './bgmops'
 import { clamp, scrubHandler, Splitter, type Layout } from './layout'
 import type { Player } from './player'
+import { savePresetBgm } from './api'
+import type { PresetCtx } from './presetctx'
 import { usePlayhead } from './playhead'
 import { fileTime, formatTime, isCut, layout, outputEnd, outToRef, rulerTicks } from './timeline'
 import type { BgmAnchor, BgmClip, Peaks, Project, Utterance } from './types'
@@ -17,6 +19,7 @@ interface Props {
   project: Project; player: Player; peaks: Record<string, Peaks>; colors: string[]; utterances: Utterance[]
   onChange: (p: Project, group?: string, opts?: ChangeOpts) => void
   layout: Layout; setLayout: (patch: Partial<Layout>) => void
+  preset: PresetCtx
 }
 
 const DB_TOP = 6, DB_BOTTOM = -42 // 音量カーブの縦軸（dB）
@@ -40,7 +43,8 @@ function useWidth() {
   return [ref, w] as const
 }
 
-export function BgmView({ project, player, peaks, colors, utterances, onChange, layout, setLayout }: Props) {
+export function BgmView({ project, player, peaks, colors, utterances, onChange, layout, setLayout, preset }: Props) {
+  const [saveMsg, setSaveMsg] = useState('')
   const dragBase = useRef(0)
   const op = findClip(project, 'op'), ed = findClip(project, 'ed')
   const [which, setWhich] = useState<'op' | 'ed'>(op >= 0 ? 'op' : 'ed')
@@ -170,6 +174,21 @@ export function BgmView({ project, player, peaks, colors, utterances, onChange, 
             update(addKeyframe(clip, t), `kf-add-${Date.now()}`)
           }}>＋ 点を追加</button>
         </details>
+        {preset.current && (
+          <div className="presetsave">
+            <button className="btn" onClick={async () => {
+              const label = which === 'op' ? 'OP' : 'ED'
+              if (!window.confirm(`今の ${label}（${clip.source}）の置き方（位置・長さ・音量・フェード・音量カーブ）を、いつもの設定「${preset.current}」に保存します。\npresets/${preset.current}.json を書き換え、次の回から使われます。よろしいですか？`)) return
+              try {
+                await preset.flush()
+                await savePresetBgm(preset.current!, clip.source)
+                await preset.reload()
+                setSaveMsg('保存しました'); window.setTimeout(() => setSaveMsg(''), 3000)
+              } catch (e) { setSaveMsg(`保存できませんでした：${(e as Error).message}`) }
+            }}>この置き方をいつもの設定に保存</button>
+            {saveMsg && <span className={`status${saveMsg.startsWith('保存しました') ? '' : ' warn'}`}>{saveMsg}</span>}
+          </div>
+        )}
       </aside>
     </div>
   )

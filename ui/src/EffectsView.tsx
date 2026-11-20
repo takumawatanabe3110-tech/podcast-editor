@@ -6,6 +6,8 @@ import { compStaticGainDb, eqResponseDb, gateStaticGainDb, logFreqs } from './ds
 import { withFader } from './Mixer'
 import { BGM_ID, MASTER_ID, faderDb, type Player } from './player'
 import { usePlayhead } from './playhead'
+import { savePresetEffects } from './api'
+import { eqTemplates, type PresetCtx } from './presetctx'
 import type { Project } from './types'
 
 type Fx = { type: string; enabled?: boolean; [k: string]: any } // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -22,6 +24,11 @@ const NEW_FX: Record<string, Fx> = {
   gate: { type: 'gate', threshold_db: -50, range_db: 20, attack_ms: 1, hold_ms: 50, release_ms: 150 },
   limiter: { type: 'limiter', ceiling_db: -1, release_ms: 50 },
 }
+
+// 平ら（なし）：形は同じで、量はすべて 0（ハイパスもなし）
+const FLAT_BANDS = [
+  { type: 'lowshelf', freq: 200, gain_db: 0 }, { type: 'bell', freq: 1000, gain_db: 0, q: 1 },
+  { type: 'bell', freq: 3000, gain_db: 0, q: 1 }, { type: 'highshelf', freq: 6000, gain_db: 0 }]
 
 export type TrackId = string // 声の素材ID / BGM_ID / MASTER_ID
 
@@ -96,9 +103,10 @@ interface Props {
   onChange: (p: Project, group?: string) => void
   denoiseBusy: Record<string, boolean>
   track: TrackId | null; setTrack: (t: TrackId) => void // 選んだトラック（App が持つ。そのトラックだけ鳴らすため）
+  preset: PresetCtx
 }
 
-export function EffectsView({ project, player, colors, onChange, denoiseBusy, track: picked, setTrack }: Props) {
+export function EffectsView({ project, player, colors, onChange, denoiseBusy, track: picked, setTrack, preset }: Props) {
   const tracks: { id: TrackId; name: string; color: string }[] = [
     ...project.voices.map((v, i) => ({ id: v.source, name: v.name || v.source, color: colors[i % colors.length] })),
     { id: BGM_ID, name: 'BGM', color: '#B79CFF' },
@@ -125,6 +133,19 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
   const setDenoise = (d: object | null) => voice && onChange({ ...project, voices: project.voices.map(v => (v === voice ? { ...v, denoise: d } : v)) }, `dn-${Date.now()}`)
   const out = project.output as { loudness_lufs?: number | null; true_peak_dbtp?: number }
   const order = eqFirst(fx)
+  const [saveMsg, setSaveMsg] = useState('')
+  const trackKey = track === MASTER_ID ? 'master' : track === BGM_ID ? 'bgm' : `voice:${project.voices.findIndex(v => v.source === track)}`
+  const trackName = tracks.find(t => t.id === track)?.name ?? ''
+  const saveToPreset = async () => {
+    if (!preset.current) return
+    if (!window.confirm(`「${trackName}」のエフェクト（EQ・ダイナミクス・フェーダー）を、いつもの設定「${preset.current}」に保存します。\npresets/${preset.current}.json を書き換え、次の回から使われます。よろしいですか？`)) return
+    try {
+      await savePresetEffects(preset.current, trackKey, fx)
+      await preset.reload()
+      setSaveMsg('保存しました'); window.setTimeout(() => setSaveMsg(''), 3000)
+    } catch (e) { setSaveMsg(`保存できませんでした：${(e as Error).message}`) }
+  }
+  const templates = eqTemplates(preset.data)
 
   return (
     <div className="fxdash">
@@ -167,6 +188,18 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
             <span className="fxlabel">dBTP</span>
           </div>
         )}
+        {preset.current && (
+          <div className="fxgroup" title="番組のいつもの設定（presets/ のファイル）">
+            <span className="fxlabel">いつもの設定</span>
+            {preset.names.length > 1
+              ? <select value={preset.current} aria-label="使うプリセット" onChange={e => preset.setCurrent(e.target.value)}>
+                  {preset.names.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              : <span className="fxlabel mono">{preset.current}</span>}
+            <button className="btn" onClick={() => void saveToPreset()}>このトラックを保存</button>
+            {saveMsg && <span className={`status${saveMsg.startsWith('保存しました') ? '' : ' warn'}`}>{saveMsg}</span>}
+          </div>
+        )}
         <div className="fxgroup" title="EQ とダイナミクスのどちらを先にかけるか">
           <span className="fxlabel">順番</span>
           <div className="tabs" role="group" aria-label="かかる順番">
@@ -181,6 +214,19 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
           <div className="fxhead">
             <h2>EQ</h2>
             <label className="onoff"><input type="checkbox" checked={!!eq && eq.enabled !== false} onChange={e => toggle('eq', e.target.checked)} />オン</label>
+            <label className="fxgroup" title="いつもの設定の EQ を呼び出す（あとから自由に直せる）">
+              <span className="fxlabel">ひな形</span>
+              <select value="" aria-label="EQ のひな形" onChange={e => {
+                const v = e.target.value
+                if (!v) return
+                const bands = v === 'flat' ? FLAT_BANDS : templates[+v]?.bands
+                if (bands) put({ ...(eq ?? NEW_FX.eq), type: 'eq', enabled: true, bands: structuredClone(bands) }, `eqtpl-${Date.now()}`)
+              }}>
+                <option value="">選ぶ…</option>
+                {templates.map((t, i) => <option key={i} value={i}>{preset.current}：{t.label}</option>)}
+                <option value="flat">平ら（なし）</option>
+              </select>
+            </label>
           </div>
           {eq ? <EqEditor fx={eq} fs={project.sample_rate} player={player} track={track} onChange={(e, g) => put(e, g)} />
             : <div className="hint">オンにすると、平らな EQ（5 バンド）から始めます</div>}

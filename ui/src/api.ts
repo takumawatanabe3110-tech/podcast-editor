@@ -39,3 +39,16 @@ export const startExport = () =>
   fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => json<{ state: string; path: string }>(r))
 
 export const getExport = () => fetch('/api/export').then(r => json<import('./Mixer').ExportStatus>(r))
+
+// ---- いつもの設定（プリセット）
+export type Preset = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+export const listPresets = () => fetch('/api/presets').then(r => json<{ name: string; description?: string }[]>(r))
+export const getPreset = (name: string) => fetch(`/api/presets/${encodeURIComponent(name)}`).then(r => json<Preset>(r))
+/** プロジェクト（保存済みのもの）の BGM の置き方を、プリセットに書き込む */
+export const savePresetBgm = (name: string, source: string) =>
+  fetch(`/api/presets/${encodeURIComponent(name)}/bgm/${encodeURIComponent(source)}`, { method: 'PUT' }).then(r => json<{ entry: unknown }>(r))
+/** トラックのエフェクトをプリセットに書き込む。track は "voice:0" / "bgm" / "master" */
+export const savePresetEffects = (name: string, track: string, effects: unknown[]) =>
+  fetch(`/api/presets/${encodeURIComponent(name)}/effects/${encodeURIComponent(track)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ effects }),
+  }).then(r => json<unknown>(r))

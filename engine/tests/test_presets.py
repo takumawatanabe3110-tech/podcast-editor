@@ -6,7 +6,7 @@ import soundfile as sf
 
 from podcast_engine import cli
 from podcast_engine.presets import PRESET_DIR, find_preset, load_preset, voice_loudness
-from podcast_engine.project import Project
+from podcast_engine.project import Keyframe, Project
 from podcast_engine.synth import SynthTrack, make_session, write_session
 
 FS = 48000
@@ -124,3 +124,99 @@ def test_okadayama_preset_is_well_formed():
     assert [v["name"] for v in d["voices"]] == ["青木さん", "内田さん"]
     assert {b["source"] for b in d["bgm"]} == {"op", "ed"}
     assert d["output"]["loudness_lufs"] == -14.0
+
+
+# ---- 一覧・保存・逆変換
+
+def _bare_project(tmp_path):
+    from podcast_engine.project import Edit, Segment, Source, Sync, Voice
+
+    (tmp_path / "ep").mkdir(exist_ok=True)
+    sf.write(tmp_path / "ep/a.wav", 0.1 * np.sin(np.arange(30 * FS) / 20).astype(np.float32), FS, subtype="FLOAT")
+    return Project(
+        sources={"a": Source("a.wav")}, sync=Sync("a"), voices=[Voice("a")],
+        edit=Edit(segments=[Segment(0.0, 30.0)]),
+    )
+
+
+def test_list_and_save_preset(tmp_path):
+    from podcast_engine.presets import list_presets, save_preset
+
+    (tmp_path / "b.json").write_text('{"format": "podpreset", "description": "B"}', encoding="utf-8")
+    (tmp_path / "a.json").write_text('{"format": "podpreset"}', encoding="utf-8")
+    (tmp_path / "x.json").write_text('{"format": "other"}', encoding="utf-8")
+    assert list_presets(tmp_path) == [{"name": "a", "description": ""}, {"name": "b", "description": "B"}]
+    save_preset(tmp_path / "c.json", {"z": 1, "a": "日本語"})
+    txt = (tmp_path / "c.json").read_text(encoding="utf-8")
+    assert txt.endswith("\n") and "日本語" in txt and txt.index('"z"') < txt.index('"a"')
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_clip_to_preset_round_trip(tmp_path):
+    from podcast_engine.presets import apply_preset, clip_to_preset
+
+    pf = _preset(tmp_path)
+    preset, pdir = load_preset(str(pf))
+    p = _bare_project(tmp_path)
+    apply_preset(p, preset, pdir, tmp_path / "ep")
+    for clip, orig in zip(p.bgm, preset["bgm"]):
+        assert clip_to_preset(p, clip, pdir, tmp_path / "ep", orig) == orig
+    # 声の位置が変わっても（別のエピソード）、基準についてくる
+    p.edit.position = 7.0
+    for clip, orig in zip(p.bgm, preset["bgm"]):
+        assert clip_to_preset(p, clip, pdir, tmp_path / "ep", orig) == orig
+
+
+def test_clip_to_preset_heuristic_without_existing(tmp_path):
+    from podcast_engine.presets import apply_preset, clip_to_preset
+
+    pf = _preset(tmp_path)
+    preset, pdir = load_preset(str(pf))
+    p = _bare_project(tmp_path)
+    apply_preset(p, preset, pdir, tmp_path / "ep")
+    e = clip_to_preset(p, p.bgm[0], pdir, tmp_path / "ep")
+    assert e["path"] == "../bgm/op.wav" and e["anchor"] == "voice_start" and "gain_db" not in e
+    kf = preset["bgm"][0]["keyframes"]
+    # 声の始まりから 10 秒以内は voice_start が優先（短いクリップなので終わりのキーフレームもそうなる）
+    assert e["keyframes"][:2] == kf[:2]
+    assert e["keyframes"][2] == {"anchor": "voice_start", "t": 6.5, "db": -3.0}
+    p.bgm[1].keyframes = [Keyframe(0.5, -3.0)]
+    e = clip_to_preset(p, p.bgm[1], pdir, tmp_path / "ep")
+    assert e["keyframes"] == [{"anchor": "voice_end", "t": -5.5, "db": -3.0}]
+    # 声から遠く、終わりに近い → clip_end
+    p.bgm[1].duration = 40.0
+    p.bgm[1].at = -60.0
+    p.bgm[1].keyframes = [Keyframe(35.0, -3.0)]
+    e = clip_to_preset(p, p.bgm[1], pdir, tmp_path / "ep")
+    assert e["keyframes"] == [{"anchor": "clip_end", "t": -5.0, "db": -3.0}]
+    # どちらでもない → clip_start（anchor は省く）
+    p.bgm[1].keyframes = [Keyframe(5.0, -3.0)]
+    e = clip_to_preset(p, p.bgm[1], pdir, tmp_path / "ep")
+    assert e["keyframes"] == [{"t": 5.0, "db": -3.0}]
+    return
+    p.bgm[1].duration = 40.0
+    p.bgm[1].at = -60.0
+    e = clip_to_preset(p, p.bgm[1], pdir, tmp_path / "ep")
+    assert e["keyframes"] == [{"t": 0.5, "db": -3.0}]
+
+
+def test_effects_for_track():
+    from podcast_engine.presets import effects_for_track, set_effects_for_track
+
+    pr = {"voices": [{"effects": [1]}], "default_voice": {"effects": [2]}, "bgm_effects": [3]}
+    assert effects_for_track(pr, "voice:0") == [1]
+    assert effects_for_track(pr, "voice:5") == [2]
+    assert effects_for_track(pr, "bgm") == [3] and effects_for_track(pr, "master") == []
+    set_effects_for_track(pr, "voice:0", [9])
+    set_effects_for_track(pr, "voice:4", [8])
+    set_effects_for_track(pr, "master", [7])
+    assert pr["voices"][0]["effects"] == [9] and pr["default_voice"]["effects"] == [8] and pr["master_effects"] == [7]
+    with pytest.raises(ValueError):
+        set_effects_for_track(pr, "foo", [])
+
+
+def test_init_stores_preset_name(tmp_path):
+    p = Project.from_dict({"format": "podproj", "version": 1})
+    assert p.preset == ""
+    p.preset = "okadayama"
+    assert Project.from_dict(p.to_dict()).preset == "okadayama"

@@ -177,6 +177,8 @@ class Project:
     output: Output = field(default_factory=Output)
     # 文字起こしの言い換え（聞き間違いやすい番組名・人名など）。例 {"村井スラジオ": "オムライスラヂオ"}
     corrections: Dict[str, str] = field(default_factory=dict)
+    # このプロジェクトを作ったプリセットの名前（presets/ のファイル名）。空なら未設定
+    preset: str = ""
 
     # ---- 読み書き
 
@@ -215,6 +217,7 @@ class Project:
             bgm_effects=list(d.get("bgm_effects", [])),
             master_effects=list(d.get("master_effects", [])),
             output=Output(**d.get("output", {})),
+            preset=str(d.get("preset", "") or ""),
         )
 
     def save(self, path: str | Path) -> None:

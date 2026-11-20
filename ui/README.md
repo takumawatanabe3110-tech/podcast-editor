@@ -27,6 +27,7 @@ npx vitest run     # テスト
 - `src/BgmView.tsx`：②BGM 画面
 - `src/bgmops.ts`：BGM の点・始まり・切る位置・フェードの計算
 - `src/EffectsView.tsx`：エフェクト画面（一覧・EQ・コンプ・ゲート・ノイズ除去・マスター）
+- `src/presetctx.ts`：いつもの設定を画面で共有する入れ物と、EQ のひな形の一覧
 - `src/fxchain.ts`：トラックのエフェクトを Web Audio の部品で組み立てる
 - `src/dsp.ts`：EQ のカーブ・コンプ／ゲートの関係の計算。エンジンと同じ式
 - `src/dynamicsCore.ts`・`src/dynamics.worklet.ts`：再生中のコンプ・ゲート。エンジンと同じ計算

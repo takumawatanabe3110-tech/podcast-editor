@@ -8,6 +8,9 @@
 - GET  /api/audio/{素材ID}   試聴用の音（24kHz・16bit WAV。声はノイズ除去済み。?raw=1 なら元のまま）
 - POST /api/export           書き出しを裏で始める（.mp3 / .wav）。同時には1つだけ
 - GET  /api/export           書き出しの状況（idle / running / done / error）
+- GET  /api/presets, GET /api/presets/{名前}   プリセットの一覧・中身
+- PUT  /api/presets/{名前}/bgm/{素材ID}        いまの BGM をプリセットに保存
+- PUT  /api/presets/{名前}/effects/{track}     エフェクトをプリセットに保存（voice:0 / bgm / master）
 重い処理（ノイズ除去・波形・試聴用の音）は .podcache/ に保存して使い回す。
 再生・音量・カットはブラウザの中で、その場で行う。
 """
@@ -26,7 +29,7 @@ from typing import Optional
 import numpy as np
 import soundfile as sf
 
-from . import audio_io
+from . import audio_io, effects, presets
 from .project import CACHE_DIR, Project
 
 PREVIEW_FS = 24000  # 試聴用の音のサンプリングレート（ブラウザのメモリを抑える）
@@ -273,6 +276,68 @@ def create_app(project_path: str | Path):
     @app.get("/api/export")
     def get_export():
         return ws.export_status()
+
+    # ---- プリセット（読み書き）。置き場所は呼ぶたびに presets.PRESET_DIR から決める
+
+    def preset_file(name: str) -> Path:
+        if not name or "/" in name or "\\" in name or ".." in name:
+            raise HTTPException(400, f"プリセット名 {name!r} は使えません")
+        return presets.PRESET_DIR / f"{name}.json"
+
+    def read_preset(name: str) -> dict:
+        f = preset_file(name)
+        if not f.exists():
+            raise HTTPException(404, f"プリセット {name!r} がありません")
+        return json.loads(f.read_text(encoding="utf-8"))
+
+    def remember_preset(p: Project, name: str) -> None:
+        if not p.preset:
+            p.preset = name
+            p.save(ws.path)
+
+    @app.get("/api/presets")
+    def get_presets():
+        return presets.list_presets(presets.PRESET_DIR)
+
+    @app.get("/api/presets/{name}")
+    def get_preset(name: str):
+        return read_preset(name)
+
+    @app.put("/api/presets/{name}/bgm/{sid}")
+    def put_preset_bgm(name: str, sid: str):
+        """いまのプロジェクトの BGM クリップを、プリセットの同じ名前の BGM に上書き（なければ追加）。"""
+        preset = read_preset(name)
+        p = ws.load()
+        clip = next((b for b in p.bgm if b.source == sid), None)
+        if clip is None:
+            raise HTTPException(404, f"BGM {sid!r} はありません")
+        items = preset.setdefault("bgm", [])
+        idx = next((i for i, b in enumerate(items) if b.get("source") == sid), None)
+        entry = presets.clip_to_preset(p, clip, presets.PRESET_DIR, ws.base, items[idx] if idx is not None else None)
+        if idx is None:
+            items.append(entry)
+        else:
+            items[idx] = entry
+        presets.save_preset(preset_file(name), preset)
+        remember_preset(p, name)
+        return {"entry": entry, "preset": name}
+
+    @app.put("/api/presets/{name}/effects/{track}")
+    def put_preset_effects(name: str, track: str, data: dict = Body(...)):
+        effects_list = data.get("effects")
+        if not isinstance(effects_list, list):
+            raise HTTPException(400, "effects は配列で指定してください")
+        errs = effects.validate(effects_list, "effects")
+        if errs:
+            raise HTTPException(400, "\n".join(errs))
+        preset = read_preset(name)
+        try:
+            presets.set_effects_for_track(preset, track, effects_list)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        presets.save_preset(preset_file(name), preset)
+        remember_preset(ws.load(), name)
+        return {"preset": name, "track": track, "effects": effects_list}
 
     @app.middleware("http")
     async def no_stale_page(request, call_next):

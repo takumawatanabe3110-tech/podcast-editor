@@ -156,3 +156,108 @@ def apply_preset(
             raise ValueError(f"プリセットの output.{k} は使えない項目です")
         setattr(project.output, k, v)
     return notes
+
+
+# ---- 一覧・保存・逆変換（画面から「プリセットに保存」するため）
+
+def list_presets(preset_dir: Optional[Path] = None) -> List[dict]:
+    d = Path(preset_dir) if preset_dir is not None else PRESET_DIR
+    out = []
+    for f in sorted(d.glob("*.json")) if d.exists() else []:
+        try:
+            j = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        if j.get("format") == FORMAT:
+            out.append({"name": f.stem, "description": j.get("description", "")})
+    return out
+
+
+def save_preset(path, data: dict) -> None:
+    """プリセットを書く（一時ファイルに書いてから置き換える。キーの順番はそのまま）。"""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _r(x: float) -> float:
+    return round(float(x), 4) + 0.0  # -0.0 を 0.0 に
+
+
+def clip_to_preset(
+    project: Project, clip: BgmClip, preset_dir: Path, base_dir: Path, existing: Optional[dict] = None,
+) -> dict:
+    """apply_preset の逆。BGM クリップ1つをプリセットの BGM 項目にする。"""
+    preset_dir, base_dir = Path(preset_dir), Path(base_dir)
+    resolved = project.source_path(clip.source, base_dir).resolve()
+    path = _rel(resolved, preset_dir)
+    if existing and existing.get("path") and (preset_dir / existing["path"]).resolve() == resolved:
+        path = existing["path"]  # 同じファイルなら、書き方をそのまま残す
+    e = {"source": clip.source, "path": path, "anchor": clip.anchor, "at": _r(clip.at), "duration": _r(clip.duration)}
+    for key, default in (("offset_in", 0.0), ("gain_db", 0.0), ("fade_in", 0.0), ("fade_out", 0.0),
+                         ("fade_in_curve", 1.0), ("fade_out_curve", 1.0)):
+        v = getattr(clip, key)
+        if _r(v) != default:
+            e[key] = _r(v)
+
+    start = project.bgm_start(clip)
+    old = (existing or {}).get("keyframes", [])
+    same = len(old) == len(clip.keyframes)
+    kfs = []
+    for i, k in enumerate(clip.keyframes):
+        T = start + k.t
+        if same:
+            anc = old[i].get("anchor", "clip_start")
+            t = k.t if anc == "clip_start" else k.t - clip.duration if anc == "clip_end" else T - project.anchor_time(anc)
+        elif clip.anchor in ("voice_start", "voice_end") and abs(T - project.anchor_time(clip.anchor)) <= 10:
+            anc, t = clip.anchor, T - project.anchor_time(clip.anchor)
+        elif clip.duration - k.t <= 10:
+            anc, t = "clip_end", k.t - clip.duration
+        else:
+            anc, t = "clip_start", k.t
+        item = {} if anc == "clip_start" else {"anchor": anc}
+        item.update({"t": _r(t), "db": _r(k.db)})
+        kfs.append(item)
+    if kfs:
+        e["keyframes"] = kfs
+    return e
+
+
+def _voice_index(track: str) -> int:
+    try:
+        i = int(track.split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise ValueError(f"トラック {track!r} は使えません（voice:0 / bgm / master）")
+    if i < 0:
+        raise ValueError(f"トラック {track!r} は使えません")
+    return i
+
+
+def effects_for_track(preset: dict, track: str) -> List[dict]:
+    """track は "voice:<番号>" / "bgm" / "master"。"""
+    if track == "bgm":
+        return list(preset.get("bgm_effects", []))
+    if track == "master":
+        return list(preset.get("master_effects", []))
+    if track.startswith("voice:"):
+        i, pv = _voice_index(track), preset.get("voices", [])
+        spec = pv[i] if i < len(pv) else preset.get("default_voice", {})
+        return list(spec.get("effects", []))
+    raise ValueError(f"トラック {track!r} は使えません（voice:0 / bgm / master）")
+
+
+def set_effects_for_track(preset: dict, track: str, effects: List[dict]) -> None:
+    """声が一覧より後の番号なら default_voice に書く。"""
+    if track == "bgm":
+        preset["bgm_effects"] = list(effects)
+    elif track == "master":
+        preset["master_effects"] = list(effects)
+    elif track.startswith("voice:"):
+        i, pv = _voice_index(track), preset.get("voices", [])
+        if i < len(pv):
+            pv[i]["effects"] = list(effects)
+        else:
+            preset.setdefault("default_voice", {})["effects"] = list(effects)
+    else:
+        raise ValueError(f"トラック {track!r} は使えません（voice:0 / bgm / master）")

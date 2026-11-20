@@ -176,3 +176,69 @@ def test_export_error_is_reported(client):
 def test_page_is_not_cached(client):
     c, _ = client
     assert c.get("/api/project").headers["cache-control"] == "no-cache"
+
+
+# ---- プリセット
+
+@pytest.fixture
+def pclient(client, monkeypatch):
+    import json
+
+    from podcast_engine import presets
+
+    c, tmp = client
+    pdir = tmp / "presets"
+    pdir.mkdir()
+    d = {
+        "format": "podpreset", "version": 1, "name": "t", "description": "テスト",
+        "voices": [{"name": "青木さん", "effects": []}], "default_voice": {"name": "ゲスト"},
+        "bgm": [{"source": "m", "path": "../bgm.wav", "anchor": "voice_end", "at": -1.0, "duration": 2.0,
+                 "keyframes": [{"anchor": "voice_end", "t": -0.5, "db": -3.0}]}],
+    }
+    (pdir / "t.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(presets, "PRESET_DIR", pdir)
+    return c, tmp, pdir
+
+
+def test_presets_list_get_and_errors(pclient):
+    c, _, _ = pclient
+    assert c.get("/api/presets").json() == [{"name": "t", "description": "テスト"}]
+    assert c.get("/api/presets/t").json()["name"] == "t"
+    assert c.get("/api/presets/nai").status_code == 404
+    assert c.get("/api/presets/..x").status_code == 400
+    assert c.put("/api/presets/nai/bgm/m").status_code == 404
+    assert c.put("/api/presets/t/bgm/zzz").status_code == 404
+
+
+def test_save_bgm_to_preset_keeps_anchors_and_sets_project_preset(pclient):
+    import json
+
+    c, tmp, pdir = pclient
+    proj = c.get("/api/project").json()["project"]
+    assert proj["preset"] == ""
+    proj["bgm"][0]["gain_db"] = -4.0
+    proj["bgm"][0]["keyframes"] = [{"t": 0.5, "db": -3.0}]  # voice_end の 0.5 秒前 → 基準についていく形
+    assert c.put("/api/project", json=proj).status_code == 200
+    r = c.put("/api/presets/t/bgm/m")
+    assert r.status_code == 200 and r.json()["preset"] == "t"
+    e = r.json()["entry"]
+    assert e["gain_db"] == -4.0 and e["path"] == "../bgm.wav" and e["anchor"] == "voice_end"
+    assert e["keyframes"] == [{"anchor": "voice_end", "t": -0.5, "db": -3.0}]
+    saved = json.loads((pdir / "t.json").read_text(encoding="utf-8"))
+    assert saved["bgm"] == [e] and list(saved)[0] == "format"
+    assert c.get("/api/project").json()["project"]["preset"] == "t"
+
+
+def test_save_effects_to_preset(pclient):
+    c, _, _ = pclient
+    gain = [{"type": "gain", "db": 2.0}]
+    for track in ("voice:0", "voice:3", "bgm", "master"):
+        r = c.put(f"/api/presets/t/effects/{track}", json={"effects": gain})
+        assert r.status_code == 200 and r.json() == {"preset": "t", "track": track, "effects": gain}
+    pr = c.get("/api/presets/t").json()
+    assert pr["voices"][0]["effects"] == gain and pr["default_voice"]["effects"] == gain
+    assert pr["bgm_effects"] == gain and pr["master_effects"] == gain
+    assert c.put("/api/presets/t/effects/bgm", json={"effects": [{"type": "nazo"}]}).status_code == 400
+    assert c.put("/api/presets/t/effects/foo", json={"effects": gain}).status_code == 400
+    assert c.put("/api/presets/t/effects/bgm", json={}).status_code == 400
+    assert c.get("/api/project").json()["project"]["preset"] == "t"
