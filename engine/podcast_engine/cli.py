@@ -2,6 +2,9 @@
 
     python -m podcast_engine info  FILE...
     python -m podcast_engine sync  FILE... [--ref 0] [--out sync.json]
+    python -m podcast_engine init  FILE... --out x.podproj [--names 青木さん 内田さん]
+    python -m podcast_engine cut   x.podproj START END [--output-time]
+    python -m podcast_engine render x.podproj --out x.mp3
 """
 
 from __future__ import annotations
@@ -14,7 +17,17 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import audio_io
+from .project import Project, Segment, Source, Sync, TrackOffset, Voice
 from .sync import sync_tracks
+
+
+def parse_time(s: str) -> float:
+    """"83.5" / "1:23.5" / "1:02:03" を秒にする。"""
+    parts = s.split(":")
+    v = 0.0
+    for p in parts:
+        v = v * 60 + float(p)
+    return v
 
 
 def _clean(o):
@@ -65,6 +78,77 @@ def cmd_sync(args) -> int:
     return 0
 
 
+def cmd_init(args) -> int:
+    """声の素材から .podproj を作る。同期を測り、全員の音がそろっている範囲を1区間にする。"""
+    out = Path(args.out)
+    base = out.resolve().parent
+    names = args.names or []
+    r = sync_tracks(args.files, reference=0)
+    p = Project(name=args.name or out.stem, sample_rate=audio_io.info(args.files[0]).sample_rate)
+    ids = []
+    for i, f in enumerate(args.files):
+        sid = f"voice{i + 1}"
+        ids.append(sid)
+        rel = Path(f).resolve()
+        try:
+            rel = rel.relative_to(base)
+        except ValueError:
+            pass
+        p.sources[sid] = Source(path=str(rel), kind="voice")
+        p.voices.append(Voice(source=sid, name=names[i] if i < len(names) else sid))
+    p.sync = Sync(
+        reference=ids[0],
+        tracks={
+            ids[i]: TrackOffset(t.offset_sec, t.drift_ppm, t.method)
+            for i, t in enumerate(r.tracks)
+            if not t.is_reference
+        },
+    )
+    # 全トラックに音がある基準時刻の範囲
+    start, end = 0.0, audio_io.info(args.files[0]).duration
+    for i, t in enumerate(r.tracks):
+        if t.is_reference:
+            continue
+        d = audio_io.info(args.files[i]).duration
+        k = 1 + t.drift_ppm * 1e-6
+        start = max(start, -t.offset_sec / k)
+        end = min(end, (d - t.offset_sec) / k)
+    p.edit.segments = [Segment(round(start, 6), round(end, 6))]
+    p.save(out)
+    print(f"{out} を作りました（{len(ids)} トラック、{end - start:.1f} 秒）", file=sys.stderr)
+    return 0
+
+
+def cmd_cut(args) -> int:
+    p = Project.load(args.project)
+    a, b = parse_time(args.start), parse_time(args.end)
+    if args.output_time:
+        ra, rb = p.edit.output_to_reference(a), p.edit.output_to_reference(b)
+        if ra is None or rb is None:
+            print("指定した出力時刻が、使っている区間の外です", file=sys.stderr)
+            return 1
+        a, b = ra, rb
+    before = p.edit.output_end
+    p.edit.cut(a, b)
+    p.save(args.project)
+    print(f"基準時刻 {a:.3f}〜{b:.3f} 秒をカット（全体 {before:.1f} → {p.edit.output_end:.1f} 秒）", file=sys.stderr)
+    return 0
+
+
+def cmd_render(args) -> int:
+    from .render import render, write
+
+    p = Project.load(args.project)
+    base = Path(args.project).resolve().parent
+    audio, rep = render(p, base)
+    write(args.out, audio, rep.sample_rate, p.output.mp3_kbps)
+    msg = f"{args.out} に書き出しました（{rep.duration:.1f} 秒、ピーク {rep.peak_dbfs:+.1f} dBFS）"
+    if rep.clipped:
+        msg += "\n注意：ピークが 0 dBFS を超えています（音割れ）。音量を下げてください"
+    print(msg, file=sys.stderr)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="podcast_engine", description="Podcast 音声処理エンジン")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -81,6 +165,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--no-drift", action="store_true", help="ドリフト（時計の誤差）を測らない")
     p.add_argument("--out", help="結果の JSON を保存するファイル")
     p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("init", help="声の素材からプロジェクト（.podproj）を作る")
+    p.add_argument("files", nargs="+", help="声の素材（1本目が同期の基準）")
+    p.add_argument("--out", required=True, help="作る .podproj")
+    p.add_argument("--names", nargs="*", help="話者名（素材の順）")
+    p.add_argument("--name", help="プロジェクト名")
+    p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("cut", help="区間をカットする（既定は基準時刻）")
+    p.add_argument("project")
+    p.add_argument("start", help="秒、または 分:秒")
+    p.add_argument("end")
+    p.add_argument("--output-time", action="store_true", help="時刻を完成版（出力）の時刻として扱う")
+    p.set_defaults(func=cmd_cut)
+
+    p = sub.add_parser("render", help="完成版を書き出す（.mp3 / .wav）")
+    p.add_argument("project")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_render)
 
     args = ap.parse_args(argv)
     return args.func(args)

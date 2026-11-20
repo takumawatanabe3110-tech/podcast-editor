@@ -20,6 +20,18 @@ cd engine
 
 `sync` は1本目を基準に、各トラックのずれ（秒）とドリフト（ppm）を JSON で出す。
 
+### プロジェクトを作って書き出す
+
+```bash
+../.venv/bin/python -m podcast_engine init 素材1.wav 素材2.wav --out 回.podproj --names 青木さん 内田さん
+../.venv/bin/python -m podcast_engine cut 回.podproj 1:23.5 1:30      # 基準時刻でカット
+../.venv/bin/python -m podcast_engine cut 回.podproj 5:00 5:10 --output-time  # 完成版の時刻でカット
+../.venv/bin/python -m podcast_engine render 回.podproj --out 回.mp3
+```
+
+`.podproj` は JSON。音量・BGM などは直接書き換える（形式は `podcast_engine/project.py`）。
+元の音声は書き換えない（非破壊）。
+
 ## テスト
 
 ```bash

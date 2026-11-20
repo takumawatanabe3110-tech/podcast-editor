@@ -1,0 +1,173 @@
+"""プロジェクトから完成版の音声を組み立てて書き出す。
+
+処理順：声トラックごとに「同期 → カット（区間をつなぐ）→ 音量 → パン」→ 全トラックを足す
+        → BGM（位置・音量カーブ・フェード）を足す → WAV / MP3 に書き出す
+エフェクト（ノイズ除去・EQ・コンプ）とラウドネス調整はフェーズ3で、この流れの途中に入れる。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+from . import audio_io
+from .project import BgmClip, Project, Voice
+
+
+@dataclass
+class RenderReport:
+    duration: float
+    sample_rate: int
+    peak_dbfs: float  # 0 を超えると MP3 で音割れする
+    clipped: bool
+
+
+def _db(x: float) -> float:
+    return float(10 ** (x / 20))
+
+
+def _read_any(path: Path) -> tuple:
+    """WAV/FLAC は soundfile、MP3 などは pedalboard で読む。(channels, n) と fs を返す。"""
+    if path.suffix.lower() in (".wav", ".flac", ".aif", ".aiff"):
+        x, fs = audio_io.read(path, dtype="float32")
+        return x.T, fs
+    from pedalboard.io import AudioFile
+
+    with AudioFile(str(path)) as f:
+        return f.read(f.frames).astype(np.float32), int(f.samplerate)
+
+
+def _read_range_padded(path: Path, start: float, stop: float, fs_file: int, frames: int) -> np.ndarray:
+    """start〜stop 秒（ファイル内の時刻）を読む。ファイルの外は無音で埋める。モノラル。"""
+    a = int(round(start * fs_file))
+    b = int(round(stop * fs_file))
+    out = np.zeros(max(0, b - a), dtype=np.float32)
+    ra, rb = max(a, 0), min(b, frames)
+    if rb > ra:
+        x, _ = audio_io.read(path, ra / fs_file, rb / fs_file, mono=True, dtype="float32")
+        n = min(len(x), rb - ra)
+        out[ra - a : ra - a + n] = x[:n]
+    return out
+
+
+def render_voice(project: Project, voice: Voice, base_dir: str | Path, length: int) -> np.ndarray:
+    """1本の声トラックを、同期とカットを反映して出力時刻に並べる（モノラル、音量・パン前）。"""
+    fs = project.sample_rate
+    path = project.source_path(voice.source, base_dir)
+    inf = audio_io.info(path)
+    off = project.sync.offset(voice.source)
+    xf = int(round(project.edit.crossfade_ms / 1000 * fs))
+    out = np.zeros(length, dtype=np.float32)
+    layout = project.edit.layout()
+
+    def to_file(t: float) -> float:
+        return t + off.offset_sec + off.drift_ppm * 1e-6 * t
+
+    for i, (out_start, seg) in enumerate(layout):
+        n = int(round(seg.length * fs))
+        x = _read_range_padded(path, to_file(seg.start), to_file(seg.end), inf.sample_rate, inf.frames)
+        # サンプリングレートの違い・ドリフトをここで吸収。四捨五入による1サンプルの差は詰めるだけ
+        if inf.sample_rate != fs or abs(len(x) - n) > 1:
+            x = audio_io.resample(x, len(x), n).astype(np.float32)
+        x = np.pad(x, (0, max(0, n - len(x))))[:n]
+        if i > 0 and xf > 0:
+            x[:xf] *= np.linspace(0, 1, xf, endpoint=False, dtype=np.float32)
+        if i < len(layout) - 1 and xf > 0:
+            x[-xf:] *= np.linspace(1, 0, xf, endpoint=False, dtype=np.float32)
+        a = int(round(out_start * fs))
+        b = min(length, a + n)
+        if b > a:
+            out[a:b] += x[: b - a]
+    return out
+
+
+def bgm_envelope(clip: BgmClip, n: int, fs: int) -> np.ndarray:
+    """BGM クリップの音量（倍率）。gain_db ＋ キーフレーム（dBで直線補間）＋ フェード。"""
+    t = np.arange(n) / fs
+    db = np.full(n, clip.gain_db, dtype=np.float64)
+    if clip.keyframes:
+        kf = sorted(clip.keyframes, key=lambda k: k.t)
+        db += np.interp(t, [k.t for k in kf], [k.db for k in kf])
+    env = 10 ** (db / 20)
+    if clip.fade_in > 0:  # フェードアウトを時間で裏返した形
+        u = np.clip(1 - t / clip.fade_in, 0, 1)  # 残りの割合
+        env *= 1 - u ** clip.fade_in_curve
+    if clip.fade_out > 0:
+        u = np.clip(1 - (clip.duration - t) / clip.fade_out, 0, 1)  # 経過の割合
+        env *= 1 - u ** clip.fade_out_curve
+    return env.astype(np.float32)
+
+
+def render_bgm(project: Project, clip: BgmClip, base_dir: str | Path, channels: int) -> np.ndarray:
+    fs = project.sample_rate
+    x, fs_file = _read_any(project.source_path(clip.source, base_dir))
+    a = int(round(clip.offset_in * fs_file))
+    b = int(round((clip.offset_in + clip.duration) * fs_file))
+    x = x[:, a:b]
+    if fs_file != fs:
+        x = audio_io.resample(x.T, fs_file, fs).T.astype(np.float32)
+    n = int(round(clip.duration * fs))
+    x = np.pad(x, ((0, 0), (0, max(0, n - x.shape[1]))))[:, :n]
+    if x.shape[0] != channels:
+        x = np.repeat(x.mean(axis=0, keepdims=True), channels, axis=0)
+    return x * bgm_envelope(clip, n, fs)
+
+
+def render(project: Project, base_dir: str | Path) -> tuple:
+    """(channels, n) の float32 配列と RenderReport を返す。"""
+    errs = project.validate()
+    if errs:
+        raise ValueError("プロジェクトに問題があります：\n" + "\n".join(errs))
+    fs = project.sample_rate
+    ch = project.output.channels
+    end = project.edit.output_end if project.voices else 0.0
+    for c in project.bgm:
+        end = max(end, c.at + c.duration)
+    length = int(round(end * fs))
+    mix = np.zeros((ch, length), dtype=np.float32)
+
+    for v in project.voices:
+        if v.mute:
+            continue
+        x = render_voice(project, v, base_dir, length) * _db(v.gain_db)
+        if ch == 1:
+            mix[0] += x
+        else:  # 等パワーのパン（中央で各チャンネル -3dB）
+            ang = (np.clip(v.pan, -1, 1) + 1) * np.pi / 4
+            mix[0] += x * np.cos(ang)
+            mix[1] += x * np.sin(ang)
+
+    for c in project.bgm:
+        y = render_bgm(project, c, base_dir, ch)
+        a = int(round(c.at * fs))
+        b = min(length, a + y.shape[1])
+        mix[:, a:b] += y[:, : b - a]
+
+    peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+    report = RenderReport(
+        duration=length / fs,
+        sample_rate=fs,
+        peak_dbfs=20 * np.log10(peak) if peak > 0 else -np.inf,
+        clipped=peak > 1.0,
+    )
+    if project.output.sample_rate != fs:
+        mix = audio_io.resample(mix.T, fs, project.output.sample_rate).T.astype(np.float32)
+        report.sample_rate = project.output.sample_rate
+    return mix, report
+
+
+def write(path: str | Path, audio: np.ndarray, fs: int, mp3_kbps: Optional[int] = 128) -> None:
+    """拡張子で形式を決める。.wav は 32bit float、.mp3 は CBR（固定ビットレート）。"""
+    path = Path(path)
+    if path.suffix.lower() == ".mp3":
+        from pedalboard.io import AudioFile
+
+        with AudioFile(str(path), "w", fs, audio.shape[0], quality=int(mp3_kbps or 128)) as f:
+            f.write(audio)
+    else:
+        import soundfile as sf
+
+        sf.write(str(path), audio.T, fs, subtype="FLOAT")

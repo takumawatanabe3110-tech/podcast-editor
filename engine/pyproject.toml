@@ -15,6 +15,7 @@ dependencies = [
   "scipy",
   "soundfile",
   "soxr",
+  "pedalboard",  # MP3 の読み書き（LAME 内蔵。ffmpeg 不要）。フェーズ3でエフェクトにも使う
 ]
 
 [project.optional-dependencies]
