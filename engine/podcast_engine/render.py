@@ -3,8 +3,10 @@
 処理順（Resolve / Fairlight の流れに合わせる）
   声トラックごと：同期 → カット（区間をつなぐ）→ 音量 → エフェクト（EQ・コンプ）→ パン
   BGM：クリップごとに位置・音量カーブ・フェード → BGM トラックのエフェクト
-  全体：声＋BGM を足す → マスターのエフェクト（Bus 1）→ WAV / MP3 に書き出す
-ノイズ除去とラウドネス調整は、まだ入っていない（フェーズ3の残り）。
+  全体：声＋BGM を足す → マスターのエフェクト（Bus 1）
+        → ラウドネスを output.loudness_lufs にそろえ、リミッターでトゥルーピークを抑える
+        → WAV / MP3 に書き出す
+ノイズ除去は、まだ入っていない（フェーズ3の残り）。
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import numpy as np
 
 from . import audio_io
 from .effects import make_chain
+from .loudness import normalize
 from .project import BgmClip, Project, Voice
 
 
@@ -26,6 +29,9 @@ class RenderReport:
     sample_rate: int
     peak_dbfs: float  # 0 を超えると MP3 で音割れする
     clipped: bool
+    loudness_before_lufs: Optional[float] = None  # ラウドネス調整の前
+    loudness_lufs: Optional[float] = None  # 書き出した音のラウドネス
+    true_peak_dbtp: Optional[float] = None
 
 
 def _db(x: float) -> float:
@@ -160,28 +166,80 @@ def render(project: Project, base_dir: str | Path) -> tuple:
     if project.master_effects:
         mix = make_chain(project.master_effects, fs)(mix)
 
+    out = project.output
+    if out.sample_rate != fs:
+        mix = audio_io.resample(mix.T, fs, out.sample_rate).T.astype(np.float32)
+    fs_out = out.sample_rate
+
+    before = after = tp = None
+    if out.loudness_lufs is not None and mix.size:
+        mix, before, after, tp = normalize(mix, fs_out, out.loudness_lufs, out.true_peak_dbtp)
+
     peak = float(np.max(np.abs(mix))) if mix.size else 0.0
     report = RenderReport(
-        duration=length / fs,
-        sample_rate=fs,
+        duration=mix.shape[1] / fs_out,
+        sample_rate=fs_out,
         peak_dbfs=20 * np.log10(peak) if peak > 0 else -np.inf,
         clipped=peak > 1.0,
+        loudness_before_lufs=before,
+        loudness_lufs=after,
+        true_peak_dbtp=tp,
     )
-    if project.output.sample_rate != fs:
-        mix = audio_io.resample(mix.T, fs, project.output.sample_rate).T.astype(np.float32)
-        report.sample_rate = project.output.sample_rate
     return mix, report
 
 
-def write(path: str | Path, audio: np.ndarray, fs: int, mp3_kbps: Optional[int] = 128) -> None:
-    """拡張子で形式を決める。.wav は 32bit float、.mp3 は CBR（固定ビットレート）。"""
-    path = Path(path)
-    if path.suffix.lower() == ".mp3":
-        from pedalboard.io import AudioFile
+def _encode_mp3(path: Path, audio: np.ndarray, fs: int, kbps: int) -> np.ndarray:
+    """MP3 に書き、読み直した音を返す（測り直し用）。"""
+    from pedalboard.io import AudioFile
 
-        with AudioFile(str(path), "w", fs, audio.shape[0], quality=int(mp3_kbps or 128)) as f:
-            f.write(audio)
-    else:
+    with AudioFile(str(path), "w", fs, audio.shape[0], quality=int(kbps)) as f:
+        f.write(audio)
+    with AudioFile(str(path)) as f:
+        return f.read(f.frames)
+
+
+def write(
+    path: str | Path,
+    audio: np.ndarray,
+    fs: int,
+    mp3_kbps: Optional[int] = 128,
+    loudness_lufs: Optional[float] = None,
+    true_peak_dbtp: Optional[float] = None,
+) -> Optional[tuple]:
+    """拡張子で形式を決める。.wav は 32bit float、.mp3 は CBR（固定ビットレート）。
+
+    MP3 で loudness_lufs を指定すると、書いた MP3 を読み直して測り、ずれを補正して書き直す。
+    - ラウドネス：MP3 は高域を削るので少し下がる → その分だけ音量を上げる
+    - トゥルーピーク：MP3 化でピークが上がることがある → 全体の音量は下げずに、
+      MP3 にする前のリミッターの上限をその分だけ下げる（ラウドネスを保ったまま音割れを防ぐ）
+    戻り値：MP3 で補正したときは (LUFS, dBTP)。それ以外は None。
+    """
+    from .loudness import integrated_loudness, normalize, true_peak_dbtp as measure_tp
+
+    path = Path(path)
+    if path.suffix.lower() != ".mp3":
         import soundfile as sf
 
         sf.write(str(path), audio.T, fs, subtype="FLOAT")
+        return None
+
+    kbps = int(mp3_kbps or 128)
+    decoded = _encode_mp3(path, audio, fs, kbps)
+    if loudness_lufs is None:
+        return None
+    # MP3 化によるラウドネスの差（offset）とピークの上がり分を測り、MP3 にする前の音を
+    # 「目標 − offset」に正確に合わせ直す（リミッターを強めた分のラウドネス低下も normalize が補う）
+    ceiling = true_peak_dbtp if true_peak_dbtp is not None else 0.0
+    pre, pre_lufs = audio, integrated_loudness(audio, fs)
+    for _ in range(4):
+        lufs, tp = integrated_loudness(decoded, fs), measure_tp(decoded, fs)
+        loud_ok = abs(loudness_lufs - lufs) <= 0.1
+        peak_ok = true_peak_dbtp is None or tp <= true_peak_dbtp + 0.05
+        if loud_ok and peak_ok:
+            break
+        offset = lufs - pre_lufs
+        if not peak_ok:
+            ceiling -= tp - true_peak_dbtp + 0.05
+        pre, _, pre_lufs, _ = normalize(audio, fs, loudness_lufs - offset, ceiling)
+        decoded = _encode_mp3(path, pre, fs, kbps)
+    return integrated_loudness(decoded, fs), measure_tp(decoded, fs)

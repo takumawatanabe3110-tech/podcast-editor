@@ -152,12 +152,33 @@ def make_gain(params: dict, fs: int) -> Processor:
     return run
 
 
+# ---------------------------------------------------------------- リミッター
+
+
+def make_limiter(params: dict, fs: int) -> Processor:
+    """{"type": "limiter", "ceiling_db": -1, "release_ms": 50, "true_peak": true}"""
+    from .loudness import limit
+
+    kw = dict(
+        ceiling_db=float(params.get("ceiling_db", -1.0)),
+        lookahead_ms=float(params.get("lookahead_ms", 1.5)),
+        release_ms=float(params.get("release_ms", 50.0)),
+        true_peak=bool(params.get("true_peak", True)),
+    )
+
+    def run(x: np.ndarray) -> np.ndarray:
+        return limit(x, fs, **kw)
+
+    return run
+
+
 # ---------------------------------------------------------------- まとめ
 
 _FACTORIES: Dict[str, Callable[[dict, int], Processor]] = {
     "eq": make_eq,
     "compressor": make_compressor,
     "gain": make_gain,
+    "limiter": make_limiter,
 }
 
 

@@ -141,8 +141,18 @@ def cmd_render(args) -> int:
     p = Project.load(args.project)
     base = Path(args.project).resolve().parent
     audio, rep = render(p, base)
-    write(args.out, audio, rep.sample_rate, p.output.mp3_kbps)
+    measured = write(
+        args.out, audio, rep.sample_rate, p.output.mp3_kbps,
+        p.output.loudness_lufs, p.output.true_peak_dbtp,
+    )
+    if measured is not None:  # MP3 は書いた後に測り直した値を表示する
+        rep.loudness_lufs, rep.true_peak_dbtp = measured
     msg = f"{args.out} に書き出しました（{rep.duration:.1f} 秒、ピーク {rep.peak_dbfs:+.1f} dBFS）"
+    if rep.loudness_lufs is not None:
+        msg += (
+            f"\nラウドネス {rep.loudness_before_lufs:.1f} → {rep.loudness_lufs:.1f} LUFS、"
+            f"トゥルーピーク {rep.true_peak_dbtp:.1f} dBTP"
+        )
     if rep.clipped:
         msg += "\n注意：ピークが 0 dBFS を超えています（音割れ）。音量を下げてください"
     print(msg, file=sys.stderr)

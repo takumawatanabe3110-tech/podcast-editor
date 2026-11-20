@@ -3,7 +3,9 @@ import pytest
 import soundfile as sf
 
 from podcast_engine import cli
-from podcast_engine.project import BgmClip, Edit, Keyframe, Project, Segment, Source, Sync, TrackOffset, Voice
+from podcast_engine.project import BgmClip, Edit, Keyframe, Output, Project, Segment, Source, Sync, TrackOffset, Voice
+
+RAW = Output(loudness_lufs=None)  # 音量そのものを確かめるテストではラウドネス調整をしない
 from podcast_engine.render import bgm_envelope, render, render_voice, write
 from podcast_engine.synth import SynthTrack, make_session, write_session
 
@@ -93,7 +95,7 @@ def test_render_cut_removes_audio_and_shortens(tmp_path):
     paths = _session(tmp_path, [0.0], duration=20, clap_at=8.0, false_transient_at=None)
     p = Project(
         sample_rate=FS, sources={"a": Source(str(paths[0]))}, sync=Sync("a"),
-        voices=[Voice("a")], edit=Edit(segments=[Segment(0.0, 20.0)], crossfade_ms=10),
+        voices=[Voice("a")], edit=Edit(segments=[Segment(0.0, 20.0)], crossfade_ms=10), output=RAW,
     )
     p.edit.cut(7.5, 9.0)  # 拍手（8.0秒）を含む区間を切る
     audio, rep = render(p, tmp_path)
@@ -132,7 +134,7 @@ def test_render_places_bgm_and_writes_mp3(tmp_path):
     sf.write(tmp_path / "bgm.wav", np.stack([tone, tone], 1), 44100, subtype="FLOAT")  # 44.1k → 48k
     p = Project(
         sample_rate=FS, sources={"m": Source("bgm.wav", "bgm")},
-        bgm=[BgmClip("m", at=1.0, duration=2.0, offset_in=0.5)],
+        bgm=[BgmClip("m", at=1.0, duration=2.0, offset_in=0.5)], output=RAW,
     )
     audio, rep = render(p, tmp_path)
     assert audio.shape == (2, 3 * FS)

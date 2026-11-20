@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "zstandard"]
+dev = ["pytest", "zstandard", "pyloudnorm"]  # pyloudnorm はラウドネス測定の照合テスト用
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

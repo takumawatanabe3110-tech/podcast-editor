@@ -144,6 +144,10 @@ class Output:
     sample_rate: int = 48000
     channels: int = 2
     mp3_kbps: int = 128
+    # 書き出しの最後にラウドネスをそろえる（None なら何もしない）。
+    # Spotify の基準（再生時に -14 にそろえる）と、過去の完成版（-14.0）に合わせて -14
+    loudness_lufs: Optional[float] = -14.0
+    true_peak_dbtp: float = -1.0  # ラウドネス調整の後、リミッターでこれ以下にする
 
 
 @dataclass
