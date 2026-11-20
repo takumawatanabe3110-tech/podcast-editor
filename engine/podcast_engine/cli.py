@@ -207,6 +207,26 @@ def cmd_render(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    """編集画面を開く（Mac の中だけのサーバー）。"""
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from .server import UI_DIST, create_app
+
+    app = create_app(args.project)
+    url = f"http://127.0.0.1:{args.port}/"
+    if not UI_DIST.exists():
+        print("画面がまだ作られていません：cd ui && npm install && npm run build", file=sys.stderr)
+    print(f"編集画面：{url}（止めるときは Ctrl+C）", file=sys.stderr)
+    if not args.no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="podcast_engine", description="Podcast 音声処理エンジン")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -244,6 +264,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("project")
     p.add_argument("--trim-end", type=float, help="最後の言葉の何秒後で切るか（プリセットの値より優先）")
     p.set_defaults(func=cmd_transcribe)
+
+    p = sub.add_parser("serve", help="編集画面を開く")
+    p.add_argument("project")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("render", help="完成版を書き出す（.mp3 / .wav）")
     p.add_argument("project")

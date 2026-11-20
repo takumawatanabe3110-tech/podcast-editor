@@ -36,6 +36,17 @@ cd engine
 OP/ED の BGM の置き方、−14 LUFS）がまとめて入る。素材は「青木さん、内田さん、（ゲスト）」の順に並べる。
 話の終わりは、`transcribe` が最後の言葉の 1.3 秒後で切る（ED の BGM もついてくる）。
 
+### 編集画面を開く
+
+```bash
+cd ui && npm install && npm run build && cd ..   # 初回と、画面を直したとき
+cd engine
+../.venv/bin/python -m podcast_engine serve 回.podproj   # ブラウザで http://127.0.0.1:8765/ が開く（止めるときは Ctrl+C）
+```
+
+台本・波形・再生・カット・文字の修正ができる。変更はその場で .podproj と .transcript.json に保存される。
+初回は波形と試聴用の音を作るので少し待つ（.podcache/ に保存）。
+
 ### プロジェクトを作って書き出す
 
 ```bash
@@ -56,5 +67,7 @@ EQ・コンプは `voices[].effects`／`bgm_effects`／`master_effects` に書�
 cd engine
 ../.venv/bin/python -m pytest -q
 ```
+
+編集画面（ui）のテストは、`ui` フォルダで実行する：`cd ui && npx vitest run`
 
 テスト用の音声は `podcast_engine/synth.py` で合成する（実際の録音はリポジトリに入れない）。
