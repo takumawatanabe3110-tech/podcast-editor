@@ -157,10 +157,10 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
             </button>
           ))}
         </div>
-        <div className="tabs" role="group" aria-label="聴き比べ" title="処理前＝エフェクトもノイズ除去もかけない音（フェーダーの分の音量はそろえる）">
-          <button aria-pressed={comparing} onClick={() => void player.setCompare(true)}>処理前</button>
-          <button aria-pressed={!comparing} onClick={() => void player.setCompare(false)}>処理後</button>
-        </div>
+        <button className={`toggle${comparing ? ' on' : ''}`} aria-pressed={comparing} onClick={() => void player.setCompare(!comparing)}
+          title="押すたびに、処理前（エフェクトもノイズ除去もかけない音。フェーダーの分の音量はそろえる）と処理後を切り替える">
+          {comparing ? '処理前を再生中' : '処理後を再生中'}
+        </button>
         {voice && (
           <div className="fxgroup" title="AI のノイズ除去（DeepFilterNet）。変えると作り直す（1トラック約1分）">
             <span className="fxlabel">ノイズ除去</span>
@@ -202,10 +202,9 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
         )}
         <div className="fxgroup" title="EQ とダイナミクスのどちらを先にかけるか">
           <span className="fxlabel">順番</span>
-          <div className="tabs" role="group" aria-label="かかる順番">
-            <button aria-pressed={order} onClick={() => set(setOrder(fx, true), `order-${Date.now()}`)}>EQ → ダイナミクス</button>
-            <button aria-pressed={!order} onClick={() => set(setOrder(fx, false), `order-${Date.now()}`)}>ダイナミクス → EQ</button>
-          </div>
+          <button className="toggle" aria-label="かかる順番（押すと入れ替え）" onClick={() => set(setOrder(fx, !order), `order-${Date.now()}`)}>
+            {order ? 'EQ → ダイナミクス' : 'ダイナミクス → EQ'} <span aria-hidden="true">⇄</span>
+          </button>
         </div>
       </div>
 

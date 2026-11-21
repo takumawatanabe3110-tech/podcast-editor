@@ -5,6 +5,7 @@ import type { Project } from './types'
 
 export interface ExportStatus {
   state: 'idle' | 'running' | 'done' | 'error'
+  progress?: number; stage?: string; remaining?: number | null
   path?: string; elapsed?: number; message?: string
   report?: { duration: number; peak_dbfs: number; clipped: boolean; loudness_before_lufs: number | null; loudness_lufs: number | null; true_peak_dbtp: number | null }
 }
@@ -75,7 +76,7 @@ export function Mixer({ project, player, colors, solo, setSolo, onChange, export
 
 function ExportResult({ s }: { s: ExportStatus }) {
   if (s.state === 'idle') return null
-  if (s.state === 'running') return <div className="chip busy">書き出し中… {Math.round(s.elapsed ?? 0)}秒（21分の回で約1分）</div>
+  if (s.state === 'running') return <div className="chip busy">書き出し中（{Math.round((s.progress ?? 0) * 100)}%・{s.stage ?? '準備中'}）{s.remaining != null ? `残り約${Math.max(1, Math.round(s.remaining))}秒` : ''}</div>
   if (s.state === 'error') return <div className="error">書き出せませんでした：{s.message}</div>
   const r = s.report!
   return (

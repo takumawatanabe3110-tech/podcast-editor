@@ -21,3 +21,5 @@ dist/
 .pytest_cache/
 .podcache/
 *.tsbuildinfo
+# 番組の作業フォルダ（素材・プロジェクト・書き出し。リポジトリに入れない）
+岡田山ラジオ/

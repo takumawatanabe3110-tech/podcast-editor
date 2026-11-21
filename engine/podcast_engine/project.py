@@ -50,6 +50,12 @@ class Sync:
 
 
 @dataclass
+class Keyframe:
+    t: float  # BGM はクリップ先頭からの秒、声は元の素材の時刻（台本と同じ）の秒
+    db: float
+
+
+@dataclass
 class Voice:
     source: str
     name: str = ""
@@ -59,6 +65,8 @@ class Voice:
     # ノイズ除去（denoise.py）。素材全体にかけてキャッシュする。None ならかけない
     denoise: Optional[dict] = None
     effects: List[dict] = field(default_factory=list)  # EQ・コンプなど（effects.py）。音量の後、パンの前
+    # 音量カーブ（dB）。t は元の素材の時刻（台本と同じ）。gain_db に足す。空なら 0dB
+    keyframes: List[Keyframe] = field(default_factory=list)
 
 
 @dataclass
@@ -123,12 +131,6 @@ class Edit:
             if end < s.end:
                 new.append(Segment(end, s.end))
         self.segments = new
-
-
-@dataclass
-class Keyframe:
-    t: float  # クリップ先頭からの秒
-    db: float
 
 
 BGM_ANCHORS = ("output_start", "voice_start", "voice_end")
@@ -202,7 +204,10 @@ class Project:
                 reference=s.get("reference", ""),
                 tracks={k: TrackOffset(**v) for k, v in s.get("tracks", {}).items()},
             ),
-            voices=[Voice(**v) for v in d.get("voices", [])],
+            voices=[
+                Voice(**{**v, "keyframes": [Keyframe(**k) for k in v.get("keyframes", [])]})
+                for v in d.get("voices", [])
+            ],
             edit=Edit(
                 position=float(e.get("position", 0.0)),
                 segments=[Segment(**x) for x in e.get("segments", [])],

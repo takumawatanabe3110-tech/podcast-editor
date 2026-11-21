@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter, fftconvolve, sosfilt
 
 from . import audio_io
 
@@ -146,9 +146,10 @@ class TrackSync:
     drift_ppm: float  # 時計の誤差。正なら時間とともにずれが増える（測れないときは 0）
     drift_points: int  # ドリフトの推定に使った測定点の数（0 なら未測定）
     confidence: float  # 相関ピークの明瞭さ（2番目のピークとの比。大きいほど確実）
-    method: str  # "clap"（拍手で精密化）/ "correlation"（拍手が見つからず全体相関で決定）
+    method: str  # "clap"（拍手で精密化）/ "correlation"（拍手が見つからず冒頭の相関で決定）/ "global"（素材全体の測定で決定）
     clap_time_sec: Optional[float] = None  # このトラック内の拍手の時刻
     sample_rate: int = 0
+    warnings: List[str] = field(default_factory=list)  # 推定が怪しいときの注意（日本語）
 
 
 @dataclass
@@ -205,6 +206,76 @@ def _refine(
 
 
 MIN_DRIFT_SPAN_SEC = 120.0
+MAX_DRIFT_PPM = 1000.0  # 実際のレコーダーの時計誤差はこれよりずっと小さい。超えたら推定の失敗とみなす
+GLOBAL_WINDOW_SEC = 30.0
+GLOBAL_POINTS = 10
+GLOBAL_SKIP_SEC = 60.0  # 冒頭の物音（マイクの調整など）を避ける
+GLOBAL_FS = 8000
+GLOBAL_MIN_RATIO = 1.3
+GLOBAL_CLUSTER_SEC = 0.05
+GLOBAL_MIN_POINTS = 3
+
+
+def _smoothed_peak(
+    seg_oth: np.ndarray, seg_ref: np.ndarray, fs: int, max_shift: int, interp: int,
+    lag_range: Optional[Tuple[float, float]] = None,
+) -> Tuple[float, float, np.ndarray]:
+    """相関カーブを約10msの幅でならして1つの山にし、(中心の遅れ[サンプル], 2番目との比, lags) を返す。"""
+    lags, cc = gcc_phat_curve(seg_oth, seg_ref, max_shift, interp=interp)
+    width = max(3, int(0.010 * fs * interp))
+    sm = fftconvolve(np.abs(cc), np.hanning(width), mode="same")
+    if lag_range is not None:  # 探す範囲（サンプル）の外は無視する
+        sm = np.where((lags >= lag_range[0]) & (lags <= lag_range[1]), sm, 0.0)
+    i = int(np.argmax(sm))
+    lag = lags[i] + _parabolic(sm, i) / interp
+    g = int(0.015 * fs * interp)
+    rest = np.concatenate((sm[: max(0, i - g)], sm[i + g + 1 :]))
+    ratio = float(sm[i] / rest.max()) if rest.size and rest.max() > 0 else float("inf")
+    return float(lag), ratio, lags
+
+
+def _global_offsets(
+    ref_path: str, path: str, fs: int, ref_len: float, oth_len: float, max_offset: float,
+) -> List[Tuple[float, float, float]]:
+    """素材全体に散らした窓で、冒頭の推定に頼らずに（0 を中心に広く探して）ずれを測る。
+
+    戻り値は自信のある点だけの [(窓の中心の基準時刻, ずれ秒, 明瞭さ)]。
+    """
+    gfs = min(fs, GLOBAL_FS)
+    half = GLOBAL_WINDOW_SEC / 2
+    lo, hi = GLOBAL_SKIP_SEC + half, ref_len - half - 1.0
+    if hi <= lo:
+        return []
+    out: List[Tuple[float, float, float]] = []
+    for c in np.linspace(lo, hi, GLOBAL_POINTS):
+        o0 = max(0.0, c - half - max_offset)
+        o1 = min(oth_len, c + half + max_offset)
+        seg_ref = _load_range(ref_path, c - half, c + half, gfs)
+        seg_oth = _load_range(path, o0, o1, gfs)
+        if np.sqrt(np.mean(seg_ref**2)) <= 1e-5 or len(seg_oth) < len(seg_ref) // 2:
+            continue
+        # seg_oth の先頭は基準の (c-half) より base 秒先。ずれ = base + 遅れ が ±max_offset に入る範囲だけ探す
+        base = o0 - (c - half)
+        rng = ((-base - max_offset) * gfs, (-base + max_offset) * gfs)
+        m = int(min(2 * max_offset + abs(base), len(seg_oth) / gfs) * gfs)
+        lag, ratio, _ = _smoothed_peak(seg_oth, seg_ref, gfs, m, interp=2, lag_range=rng)
+        off = base + lag / gfs
+        # 探す範囲の端にある山は、範囲の外にある本当の山の裾にすぎないので使わない
+        if ratio >= GLOBAL_MIN_RATIO and abs(off) < max_offset - 0.05:
+            out.append((float(c), off, ratio))
+    return out
+
+
+def _largest_cluster(pts: List[Tuple[float, float, float]]) -> List[Tuple[float, float, float]]:
+    """ずれが GLOBAL_CLUSTER_SEC 以内に集まった点のうち、最大のかたまり（同数なら明瞭さの合計が高い方）。"""
+    best: List[Tuple[float, float, float]] = []
+    best_key = (0, 0.0)
+    for _, d0, _ in pts:
+        grp = [p for p in pts if abs(p[1] - d0) <= GLOBAL_CLUSTER_SEC]
+        key = (len(grp), sum(p[2] for p in grp))
+        if key > best_key:
+            best, best_key = grp, key
+    return best
 
 
 def _measure_drift(
@@ -234,15 +305,7 @@ def _measure_drift(
             if np.sqrt(np.mean(seg_ref**2)) > 1e-5 and len(seg_oth) > len(seg_ref):
                 # かぶりで前後数ミリ秒に山が2つでき、測るたびにどちらを拾うかが変わる。
                 # 相関カーブを約10msの幅でならして1つの山にし、その中心を使う
-                interp = 8
-                lags, cc = gcc_phat_curve(seg_oth, seg_ref, int(2 * search * fs) + 1, interp=interp)
-                width = max(3, int(0.010 * fs * interp))
-                sm = np.convolve(np.abs(cc), np.hanning(width), mode="same")
-                i = int(np.argmax(sm))
-                lag = lags[i] + _parabolic(sm, i) / interp
-                g = int(0.015 * fs * interp)
-                rest = np.concatenate((sm[: max(0, i - g)], sm[i + g + 1 :]))
-                ratio = float(sm[i] / rest.max()) if rest.size and rest.max() > 0 else float("inf")
+                lag, ratio, _ = _smoothed_peak(seg_oth, seg_ref, fs, int(2 * search * fs) + 1, interp=8)
                 if ratio >= 1.5:
                     ts.append(c)
                     offs.append(pred - search + lag / fs)
@@ -257,7 +320,7 @@ def sync_tracks(
     paths: Sequence[str | Path],
     reference: int = 0,
     window_sec: float = 60.0,
-    max_offset_sec: float = 30.0,
+    max_offset_sec: float = 60.0,  # 録音機の録り始めのずれ。12/4 回は 34 秒あった（30 秒では足りなかった）
     drift_window_sec: float = 60.0,
     measure_drift: bool = True,
 ) -> SyncResult:
@@ -332,6 +395,47 @@ def sync_tracks(
             offset_at, ratio = _refine(ref_head, other_head, fs, t_mid, coarse, t_mid, t_mid)
             method, t_at = "correlation", t_mid
 
+        warnings: List[str] = []
+        head_offset = offset_at
+
+        # 冒頭の推定が間違っていないか、素材全体の測定と照らし合わせる
+        try:
+            gpts = _global_offsets(
+                ref_path, path, fs, infos[reference].duration, infos[k].duration, max_offset_sec
+            )
+        except ValueError:
+            gpts = []
+        grp = _largest_cluster(gpts)
+        if len(grp) >= GLOBAL_MIN_POINTS:
+            med = float(np.median([p[1] for p in grp]))
+            if abs(med - head_offset) > GLOBAL_CLUSTER_SEC:
+                warnings.append(
+                    f"冒頭から求めたずれ（{head_offset:+.4f}秒）が素材全体の測定（{med:+.4f}秒、"
+                    f"{len(grp)}点が一致）と食い違うため、全体の測定を採用しました"
+                )
+                if method == "clap":
+                    clap_times_ref.pop()
+                # 新しいずれに合う拍手の組があれば、これまでどおり拍手で精密化する
+                clap_ref, best_score = None, -np.inf
+                for r in ref_claps:
+                    for o in other_claps:
+                        if abs((o.time - r.time) - med) < GLOBAL_CLUSTER_SEC and r.score + o.score > best_score:
+                            best_score, clap_ref, coarse = r.score + o.score, r.time, o.time - r.time
+                if clap_ref is not None:
+                    offset_at, ratio = _refine(ref_head, other_head, fs, clap_ref, coarse, 0.05, 0.25)
+                    method, t_at = "clap", clap_ref
+                    clap_times_ref.append(clap_ref)
+                else:
+                    # 相関がいちばん明瞭だった窓で、元の周波数のまま精密化する
+                    c = max(grp, key=lambda p: p[2])[0]
+                    half = GLOBAL_WINDOW_SEC / 2
+                    o0 = max(0.0, c - half + med - 1.0)
+                    seg_ref = _load_range(ref_path, c - half, c + half, fs)
+                    seg_oth = _load_range(path, o0, c + half + med + 1.0, fs)
+                    base = o0 - (c - half)
+                    local, ratio = _refine(seg_ref, seg_oth, fs, half, med - base, half, half)
+                    offset_at, method, t_at, clap_ref = local + base, "global", c, None
+
         drift_ppm, drift_points = 0.0, 0
         if measure_drift:
             drift_ppm, drift_points = _measure_drift(
@@ -339,6 +443,12 @@ def sync_tracks(
                 infos[reference].duration, infos[k].duration,
                 window=drift_window_sec / 2, step=drift_window_sec,
             )
+
+        if abs(drift_ppm) > MAX_DRIFT_PPM:
+            warnings.append(
+                f"ドリフトの推定値（{drift_ppm:+.0f} ppm）が大きすぎるため、測定の失敗とみなして 0 にしました（ずれが探索範囲 ±{max_offset_sec:g}秒の外にある可能性があります）"
+            )
+            drift_ppm, drift_points = 0.0, 0
 
         offset0 = offset_at - drift_ppm * 1e-6 * t_at
         result.tracks.append(
@@ -353,6 +463,7 @@ def sync_tracks(
                 method=method,
                 clap_time_sec=None if clap_ref is None else float(clap_ref + offset_at),
                 sample_rate=infos[k].sample_rate,
+                warnings=warnings,
             )
         )
 

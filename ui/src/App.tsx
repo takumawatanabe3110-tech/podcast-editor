@@ -1,30 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
-import { BgmView, type ChangeOpts } from './BgmView'
+import { EditTimeline, type ChangeOpts } from './EditTimeline'
 import { cutLines, refToOutOrNext, restoreLine } from './editops'
 import { EffectsView } from './EffectsView'
 import { Mixer, type ExportStatus } from './Mixer'
 import { MASTER_ID, Player } from './player'
 import type { PresetCtx } from './presetctx'
+import { enrollVoiceprint, type Current } from './library'
 import { usePlayhead } from './playhead'
 import { ScriptPanel } from './ScriptPanel'
 import { clamp, Splitter, useLayout } from './layout'
 import { formatTime, outToRef } from './timeline'
-import { Overview, Tracks, type View } from './TrackView'
+import { Overview, type View } from './TrackView'
 import type { Peaks, Project, Transcript } from './types'
 
 const COLORS = ['#6AA7FF', '#F2A65A', '#7BD88F', '#E58AE0']
 const GROUP_MS = 1500 // 同じ操作（フェーダーを動かし続ける等）は、この間隔内なら「元に戻す」1回分にまとめる
 
 type Save = 'saved' | 'saving' | { error: string }
-type Screen = 'edit' | 'bgm' | 'fx'
+type Screen = 'edit' | 'fx'
 
 /** 並び（カット・BGM の位置やカーブ）が変わったか。変わっていなければ鳴らし直さずに音量だけ変える */
 function structuralChange(a: Project, b: Project) {
-  return a.edit !== b.edit || a.bgm !== b.bgm
+  return a.edit !== b.edit || a.bgm !== b.bgm || a.voices.some((v, i) => v.keyframes !== b.voices[i]?.keyframes)
 }
 
-export default function App() {
+export default function App({ current, onShowList }: { current?: Current; onShowList?: () => void } = {}) {
   const player = useMemo(() => new Player(), [])
   const [name, setName] = useState('')
   const [project, setProject] = useState<Project | null>(null)
@@ -34,7 +35,7 @@ export default function App() {
   const [fatal, setFatal] = useState<string | null>(null)
   const [save, setSave] = useState<Save>('saved')
   const [selected, setSelected] = useState<number[]>([])
-  const [view, setView] = useState<View>({ start: 0, span: 30 })
+  const [view, setView] = useState<View>({ start: 0, span: 40 }) // 完成版の時刻（編集画面の表示範囲）
   const [showRuby, setShowRuby] = useState(true)
   const [refTotal, setRefTotal] = useState(60)
   const [screen, setScreen] = useState<Screen>('edit')
@@ -60,7 +61,7 @@ export default function App() {
         setName(r.name); setProject(p); player.setProject(p)
         setRefTotal(r.derived.sources[p.sync.reference]?.duration ?? r.derived.output_end)
         const first = p.edit.segments[0]?.start ?? 0
-        setView({ start: Math.max(0, first - 2), span: 30 })
+        setView({ start: 0, span: 40 }); void first
         setLoading('文字起こし・波形を読み込み中…')
         const sids = Object.keys(p.sources)
         const [tr, ...pk] = await Promise.all([api.getTranscript(), ...sids.map(s => api.getPeaks(s))])
@@ -69,7 +70,7 @@ export default function App() {
         setPeaks(Object.fromEntries(sids.map((s, i) => [s, pk[i]])))
         setLoading(`音声を読み込み中… 0/${sids.length}`)
         await player.load(sids, (d, n) => alive && setLoading(`音声を読み込み中… ${d}/${n}`))
-        if (alive) { setLoading(''); player.seek(p.edit.position) }
+        if (alive) { setLoading(''); player.seek(0) } // 0 秒から（OP の BGM の頭から聴けるように）
         const ex = await api.getExport()
         if (alive) setExportStatus(ex)
       } catch (e) {
@@ -196,6 +197,32 @@ export default function App() {
   }, [])
   const presetCtx: PresetCtx = { names: presetNames, current: presetCurrent, setCurrent: setPresetPick, data: presetData, reload: reloadPreset, flush }
 
+  /** トラックの名前を変える（台本の名前も変える） */
+  const renameVoice = useCallback((sid: string, name: string) => {
+    const p = projectRef.current
+    if (!p) return
+    const old = p.voices.find(v => v.source === sid)?.name
+    update({ ...p, voices: p.voices.map(v => (v.source === sid ? { ...v, name } : v)) }, `rename-${Date.now()}`)
+    if (transcript) {
+      const next: Transcript = { ...transcript, utterances: transcript.utterances.map(u => (u.source === sid || u.speaker === old ? { ...u, speaker: u.source === sid ? name : u.speaker } : u)) }
+      setTranscript(next)
+      api.putTranscript(next).catch(e => setSave({ error: String(e.message ?? e) }))
+    }
+  }, [update, transcript])
+
+  /** BGM の置き方（全部のクリップ）をいつもの設定に保存 */
+  const saveBgmToPreset = useCallback(async () => {
+    const p = projectRef.current, name = presetCtx.current
+    if (!p || !name) return
+    if (!window.confirm(`今の BGM（${p.bgm.map(c => c.source).join('・')}）の置き方を、いつもの設定「${name}」に保存します。\npresets/${name}.json を書き換え、次の回から使われます。よろしいですか？`)) return
+    try {
+      await presetCtx.flush()
+      for (const c of p.bgm) await api.savePresetBgm(name, c.source)
+      await presetCtx.reload()
+      window.alert('保存しました')
+    } catch (e) { setSave({ error: String((e as Error).message ?? e) }) }
+  }, [presetCtx])
+
   const startExport = useCallback(async () => {
     const p = projectRef.current
     if (!p) return
@@ -214,6 +241,16 @@ export default function App() {
     return () => window.clearTimeout(id)
   }, [exportStatus])
 
+
+  // 書き出しの残り時間：段階によって進み具合が止まり、計算した値が増えることがあるので、増えないようにする（カウントダウン）
+  const remainRef = useRef<{ v: number; at: number } | null>(null)
+  let remainShown: number | null = null
+  if (exportStatus.state === 'running' && exportStatus.remaining != null) {
+    const now = performance.now(), prev = remainRef.current
+    const counted = prev ? prev.v - (now - prev.at) / 1000 : Infinity
+    remainShown = Math.max(0, Math.min(exportStatus.remaining, counted))
+    if (!prev || remainShown !== prev.v) remainRef.current = { v: remainShown, at: now }
+  } else if (exportStatus.state !== 'running') remainRef.current = null
 
   // ---- キーボード
   useEffect(() => {
@@ -253,10 +290,14 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
+        {onShowList && current?.program && (
+          <button className="btn icon" aria-label="一覧へ" title="一覧へ（番組・回）" onClick={onShowList}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+          </button>
+        )}
         <div className="title" title={info}><b>{project.name || name}</b></div>
         <div className="tabs" role="group" aria-label="画面の切り替え">
           <button aria-pressed={screen === 'edit'} onClick={() => setScreen('edit')}>編集</button>
-          <button aria-pressed={screen === 'bgm'} onClick={() => setScreen('bgm')}>BGM</button>
           <button aria-pressed={screen === 'fx'} onClick={() => setScreen('fx')}>エフェクト</button>
         </div>
         {loading && <span className="status busy">{loading}</span>}
@@ -275,8 +316,15 @@ export default function App() {
           <button className="btn icon" aria-label="操作の一覧" aria-expanded={help} title="操作の一覧（?）" onClick={() => setHelp(h => !h)}>?</button>
           {help && <Help screen={screen} onClose={() => setHelp(false)} />}
         </div>
-        <button className="btn primary" onClick={startExport} disabled={exportStatus.state === 'running'}>
-          {exportStatus.state === 'running' ? `書き出し中… ${Math.round(exportStatus.elapsed ?? 0)}秒` : '書き出し（MP3）'}
+        {exportStatus.state === 'running' && (
+          <span className="status busy exporting" title={exportStatus.stage ?? ''}>
+            <span className="pbar"><span style={{ width: `${Math.round((exportStatus.progress ?? 0) * 100)}%` }} /></span>
+            {remainShown != null ? (remainShown <= 3 ? 'まもなく終わります' : `残り約${fmtRemain(remainShown)}`) : '書き出しを準備中…'}
+          </span>
+        )}
+        <button className="btn icon primary" onClick={startExport} disabled={exportStatus.state === 'running'}
+          aria-label="MP3 に書き出す" title="MP3 に書き出す">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4v11" /><path d="M7 10l5 5 5-5" /><path d="M5 20h14" /></svg>
         </button>
       </header>
       {screen === 'edit' ? (
@@ -292,8 +340,17 @@ export default function App() {
               showRuby={showRuby} setShowRuby={setShowRuby} />
             <Overview project={project} player={player} view={view} total={total} />
             <div className="trackwrap">
-              <Tracks project={project} utterances={transcript?.utterances ?? []} peaks={peaks} player={player} view={view} setView={setView}
-                refTotal={refTotal} showRuby={showRuby} colors={COLORS} />
+              <EditTimeline project={project} utterances={transcript?.utterances ?? []} peaks={peaks} player={player} view={view} setView={setView}
+                total={total} showRuby={showRuby} colors={COLORS} onChange={update}
+                refDur={sid => (player.duration(sid) ?? refTotal) - (project.sync.tracks[sid]?.offset_sec ?? 0)}
+                onOpenFx={t => { setFxTrack(t); setScreen('fx') }}
+                onRename={renameVoice}
+                onSaveBgm={presetCtx.current ? saveBgmToPreset : undefined}
+                onEnroll={current?.program ? async (sid, nm) => {
+                  if (!window.confirm(`このトラックの声を「${nm}」の声紋として番組に登録します。次の回から、この声に近いトラックに「${nm}」と付きます。よろしいですか？`)) return
+                  try { await enrollVoiceprint(current.program, nm, current.episode, sid); window.alert(`「${nm}」の声紋を登録しました`) }
+                  catch (e) { window.alert(`登録できませんでした：${(e as Error).message}`) }
+                } : undefined} />
             </div>
             <Splitter dir="row" label="ミキサーの高さ" onStart={() => { dragBase.current = layout.mixerH }}
               onDrag={d => setLayout({ mixerOpen: true, mixerH: clamp(dragBase.current - d, 120, Math.max(140, window.innerHeight - 260)) })}
@@ -314,20 +371,19 @@ export default function App() {
         <div className="body bgmbody">
           <main className="main" style={{ overflow: 'hidden' }}>
             <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef} />
+            <Overview project={project} player={player} total={total} />
             <EffectsView project={project} player={player} colors={COLORS} onChange={update} denoiseBusy={denoiseBusy} track={fxTrack} setTrack={setFxTrack} preset={presetCtx} />
           </main>
         </div>
-      ) : (
-        <div className="body bgmbody">
-          <main className="main" style={{ overflow: 'hidden' }}>
-            <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef} />
-            <BgmView project={project} player={player} peaks={peaks} colors={COLORS} utterances={transcript?.utterances ?? []} preset={presetCtx}
-              onChange={update} layout={layout} setLayout={setLayout} />
-          </main>
-        </div>
-      )}
+      ) : null}
     </div>
   )
+}
+
+/** 残り時間の表示（例：45秒、1分20秒） */
+function fmtRemain(sec: number) {
+  const s = Math.max(1, Math.round(sec))
+  return s < 60 ? `${s}秒` : `${Math.floor(s / 60)}分${s % 60 ? `${s % 60}秒` : ''}`
 }
 
 const HELP: Record<'common' | Screen, [string, string][]> = {
@@ -342,22 +398,18 @@ const HELP: Record<'common' | Screen, [string, string][]> = {
   edit: [
     ['Ctrl+S', '台本の欄を開く／閉じる'],
     ['文をクリック', 'そこへ移動して文字を直す（Enter 確定・Esc 取り消し。音声は変わらない）'],
-    ['時刻をクリック', 'その文を選ぶ（Shift で範囲、⌘ で追加）'],
-    ['ドラッグ', '複数の文を選ぶ'],
-    ['Delete', '選んだ文をカット'],
+    ['時刻をクリック', 'その文を選ぶ（Shift で範囲、⌘ で追加）→ Delete でカット'],
     ['カット済みの文をクリック', 'カットを戻す'],
-    ['波形をクリック', 'そこへ移動'],
-    ['全体のバーをクリック', 'そこへ移動'],
+    ['波形をクリック', 'そこへ移動（区間を選ぶ → Delete で取り除く）'],
+    ['波形の上をドラッグ', '範囲を選ぶ → Delete でカット'],
+    ['C', '再生位置に切れ目を入れる'],
+    ['区間の端をドラッグ', '削る・カットした部分を戻す'],
+    ['⇔ をドラッグ', '声全体の位置（話し始め）を動かす'],
+    ['音量の線をクリック', '点を打つ → ドラッグで変える（選んで Delete で消す）'],
+    ['BGM をドラッグ', '位置を動かす（端で頭・終わりを削る・戻す、□ でフェード）'],
+    ['トラック名をクリック', 'エフェクトを開く（名前の欄は書き換えられる）'],
     ['フェーダーをダブルクリック', '0 dB に戻す'],
     ['境目をダブルクリック', 'ミキサーを開く／閉じる'],
-  ],
-  bgm: [
-    ['○ をドラッグ', '音量の点を動かす（時刻と音量）'],
-    ['線をダブルクリック', '音量の点を足す'],
-    ['○ を選んで Delete', '音量の点を消す'],
-    ['白い線をドラッグ', '始まり／切る位置を変える'],
-    ['□ をドラッグ', 'フェードの長さを変える'],
-    ['目盛りをダブルクリック', '表示を元に戻す'],
   ],
   fx: [
     ['トラックを選ぶ', 'そのトラックだけ鳴らす（マスターは全部）'],

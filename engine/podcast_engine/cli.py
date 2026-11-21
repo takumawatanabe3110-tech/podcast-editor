@@ -6,6 +6,8 @@
     python -m podcast_engine transcribe x.podproj [--trim-end 0.8]
     python -m podcast_engine cut   x.podproj START END [--output-time]
     python -m podcast_engine render x.podproj --out x.mp3
+    python -m podcast_engine serve [x.podproj] [--library DIR]
+    python -m podcast_engine library-init [--program 岡田山ラジオ]
 """
 
 from __future__ import annotations
@@ -76,66 +78,37 @@ def cmd_sync(args) -> int:
             f"（{t.method}、明瞭さ {t.confidence:.1f}）、ドリフト {t.drift_ppm:+.1f} ppm",
             file=sys.stderr,
         )
+        for w in t.warnings:
+            print(f"  注意：{w}", file=sys.stderr)
     return 0
 
 
 def cmd_init(args) -> int:
     """声の素材から .podproj を作る。同期を測り、全員の音がそろっている範囲を1区間にする。"""
+    from . import library
+
     out = Path(args.out)
-    base = out.resolve().parent
-    names = args.names or []
-    r = sync_tracks(args.files, reference=0)
-    p = Project(name=args.name or out.stem, sample_rate=audio_io.info(args.files[0]).sample_rate)
-    ids = []
-    for i, f in enumerate(args.files):
-        sid = f"voice{i + 1}"
-        ids.append(sid)
-        rel = Path(f).resolve()
-        try:
-            rel = rel.relative_to(base)
-        except ValueError:
-            pass
-        p.sources[sid] = Source(path=str(rel), kind="voice")
-        p.voices.append(Voice(
-            source=sid, name=names[i] if i < len(names) else sid,
-            denoise=None if args.no_denoise else dict(DEFAULT_DENOISE),
-        ))
-    p.sync = Sync(
-        reference=ids[0],
-        tracks={
-            ids[i]: TrackOffset(t.offset_sec, t.drift_ppm, t.method)
-            for i, t in enumerate(r.tracks)
-            if not t.is_reference
-        },
-    )
-    # 全トラックに音がある基準時刻の範囲
-    start, end = 0.0, audio_io.info(args.files[0]).duration
-    for i, t in enumerate(r.tracks):
-        if t.is_reference:
-            continue
-        d = audio_io.info(args.files[i]).duration
-        k = 1 + t.drift_ppm * 1e-6
-        start = max(start, -t.offset_sec / k)
-        end = min(end, (d - t.offset_sec) / k)
-    p.edit.segments = [Segment(round(start, 6), round(end, 6))]
-
-    notes = []
-    if args.preset:
-        from .presets import apply_preset, find_preset, load_preset
-
-        preset, preset_dir = load_preset(args.preset)
-        p.preset = find_preset(args.preset).stem
-        notes = apply_preset(p, preset, preset_dir, base, r.clap_time_ref_sec, names_given=bool(names))
-    if args.no_denoise:
-        for v in p.voices:
-            v.denoise = None
-    errs = p.validate()
-    if errs:
-        print("プロジェクトに問題があります：\n" + "\n".join(errs), file=sys.stderr)
+    bgm_paths, prints = None, None
+    preset = args.preset
+    if args.program:  # 番組フォルダの BGM・声紋・プリセットを使う
+        pdir = Path(args.program)
+        prog = library.load_program(pdir)
+        bgm_paths = library.program_bgm_paths(prog, pdir)
+        prints = library.program_prints(prog, pdir) or None
+        preset = preset or prog.get("preset")
+    try:
+        res = library.create_episode(
+            args.files, out, preset=preset, name=args.name, names=args.names, no_denoise=args.no_denoise,
+            bgm_paths=bgm_paths, prints=prints, log=lambda s: print(s, file=sys.stderr),
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
         return 1
-    p.save(out)
-    print(f"{out} を作りました（{len(ids)} トラック、出力 {p.edit.output_end:.1f} 秒まで声）", file=sys.stderr)
-    for n in notes:
+    p = res["project"]
+    print(f"{out} を作りました（{len(p.voices)} トラック、出力 {p.edit.output_end:.1f} 秒まで声）", file=sys.stderr)
+    if res["assigned"]:
+        print("  話者：" + "、".join(f"{k}={v}" for k, v in res["assigned"].items()), file=sys.stderr)
+    for n in res["notes"]:
         print(f"  {n}", file=sys.stderr)
     return 0
 
@@ -158,29 +131,9 @@ def cmd_cut(args) -> int:
 
 def cmd_transcribe(args) -> int:
     """文字起こしをして .transcript.json（ルビ用）と .transcript.txt（台本）を作る。話の終わりも切る。"""
-    from .transcribe import transcribe_project
+    from . import library
 
-    proj = Path(args.project)
-    p = Project.load(proj)
-    base = proj.resolve().parent
-    tr = transcribe_project(p, base, log=lambda s: print(s, file=sys.stderr))
-    stem = proj.with_suffix("")
-    tr.save(f"{stem}.transcript.json")
-    Path(f"{stem}.transcript.txt").write_text(tr.script_text(), encoding="utf-8")
-    n = len(tr.utterances)
-    print(f"{stem}.transcript.json / .txt を作りました（発言 {n}）", file=sys.stderr)
-
-    pad = args.trim_end if args.trim_end is not None else p.edit.end_after_speech_sec
-    end = tr.speech_end
-    if pad is not None and end is not None and p.edit.segments:
-        last = p.edit.segments[-1]
-        new_end = round(end + pad, 3)
-        if last.start < new_end < last.end:
-            before = p.edit.output_end
-            last.end = new_end
-            p.save(proj)
-            print(f"話の終わり（基準時刻 {end:.2f} 秒）の {pad} 秒後で切りました"
-                  f"（声の終わり {before:.1f} → {p.edit.output_end:.1f} 秒。ED の BGM もついてきます）", file=sys.stderr)
+    library.transcribe_and_save(args.project, args.trim_end, log=lambda s: print(s, file=sys.stderr))
     return 0
 
 
@@ -202,6 +155,18 @@ def cmd_render(args) -> int:
     return 0
 
 
+def cmd_library_init(args) -> int:
+    """番組フォルダに program.json を作る（一度きりの移行）。BGM はプリセットから BGM/ にコピー。"""
+    from . import library
+
+    root = Path(args.library) if args.library else Path(__file__).resolve().parents[2]
+    existed = (root / args.program / library.PROGRAM_FILE).exists()
+    prog = library.library_init(root, args.program, args.preset)
+    print(f"{root / args.program / library.PROGRAM_FILE} " + ("はすでにあります" if existed else "を作りました"), file=sys.stderr)
+    print(json.dumps(prog, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_serve(args) -> int:
     """編集画面を開く（Mac の中だけのサーバー）。"""
     import threading
@@ -211,7 +176,7 @@ def cmd_serve(args) -> int:
 
     from .server import UI_DIST, create_app
 
-    app = create_app(args.project)
+    app = create_app(args.project, args.library)
     url = f"http://127.0.0.1:{args.port}/"
     if not UI_DIST.exists():
         print("画面がまだ作られていません：cd ui && npm install && npm run build", file=sys.stderr)
@@ -234,7 +199,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("files", nargs="+")
     p.add_argument("--ref", type=int, default=0, help="基準にするトラックの番号（0始まり）")
     p.add_argument("--window", type=float, default=60.0, help="冒頭の解析に使う秒数")
-    p.add_argument("--max-offset", type=float, default=30.0, help="想定する最大のずれ（秒）")
+    p.add_argument("--max-offset", type=float, default=60.0, help="想定する最大のずれ（秒）")
     p.add_argument("--no-drift", action="store_true", help="ドリフト（時計の誤差）を測らない")
     p.add_argument("--out", help="結果の JSON を保存するファイル")
     p.set_defaults(func=cmd_sync)
@@ -246,6 +211,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--name", help="プロジェクト名")
     p.add_argument("--no-denoise", action="store_true", help="声トラックにノイズ除去を付けない")
     p.add_argument("--preset", help="いつもの設定（presets/ のファイル名、または .json のパス）。例：okadayama")
+    p.add_argument("--program", help="番組フォルダ。BGM・声紋（話者の自動判定）・プリセットをここから使う")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("cut", help="区間をカットする（既定は基準時刻）")
@@ -260,11 +226,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--trim-end", type=float, help="最後の言葉の何秒後で切るか（プリセットの値より優先）")
     p.set_defaults(func=cmd_transcribe)
 
-    p = sub.add_parser("serve", help="編集画面を開く")
-    p.add_argument("project")
+    p = sub.add_parser("serve", help="編集画面を開く（プロジェクトを渡さなければ番組の一覧から選ぶ）")
+    p.add_argument("project", nargs="?")
+    p.add_argument("--library", help="番組フォルダが並ぶ場所（既定はリポジトリのルート）")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("library-init", help="番組フォルダに program.json を作る（移行用）")
+    p.add_argument("--program", default="岡田山ラジオ", help="番組のフォルダ名")
+    p.add_argument("--preset", default="okadayama")
+    p.add_argument("--library", help="番組フォルダが並ぶ場所（既定はリポジトリのルート）")
+    p.set_defaults(func=cmd_library_init)
 
     p = sub.add_parser("render", help="完成版を書き出す（.mp3 / .wav）")
     p.add_argument("project")

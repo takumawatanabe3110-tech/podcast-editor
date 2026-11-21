@@ -10,6 +10,7 @@
 import { getAudio } from './api'
 import workletUrl from './dynamics.worklet.ts?worker&url'
 import { FxChain } from './fxchain'
+import { curveDbAt } from './nle'
 import { bgmGainCurve, bgmPieces, outputEnd, voicePieces } from './timeline'
 import type { Project } from './types'
 
@@ -284,7 +285,18 @@ export class Player {
         const a = t0 + pc.when, b = a + pc.duration
         if (pc.fadeIn > 0) { fg.gain.setValueAtTime(0, a); fg.gain.linearRampToValueAtTime(1, a + pc.fadeIn) }
         if (pc.fadeOut > 0) { fg.gain.setValueAtTime(1, Math.max(a, b - pc.fadeOut)); fg.gain.linearRampToValueAtTime(0, b) }
-        src.connect(fg).connect(strip.gain)
+        // 声の音量カーブ（基準時刻の点）：このかけらの間の値を、出力の時間に沿って流す
+        let tail: AudioNode = fg
+        if (v.keyframes && v.keyframes.length) {
+          const kg = ctx.createGain()
+          const n = Math.max(2, Math.ceil(pc.duration * 50))
+          const curve = new Float32Array(n)
+          for (let k = 0; k < n; k++) curve[k] = Math.pow(10, curveDbAt(v.keyframes, pc.refStart + (k / (n - 1)) * pc.duration) / 20)
+          kg.gain.setValueAtTime(curve[0], a)
+          kg.gain.setValueCurveAtTime(curve, a, pc.duration)
+          fg.connect(kg); tail = kg
+        }
+        src.connect(fg); tail.connect(strip.gain)
         src.start(a, pc.fileStart, pc.duration * pc.rate)
         this.nodes.push(src)
       }

@@ -151,7 +151,7 @@ def test_export_conflict_while_running(client, monkeypatch):
     gate = threading.Event()
     from podcast_engine.render import RenderReport
 
-    def slow_export(p, base, out):
+    def slow_export(p, base, out, progress=None):
         gate.wait(30)  # 合図が来るまで書き出し中のまま
         return RenderReport(1.0, 48000, -6.0, False)
 
@@ -163,6 +163,33 @@ def test_export_conflict_while_running(client, monkeypatch):
     assert r.status_code == 409 and "書き出し中" in r.json()["detail"]
     gate.set()
     assert _wait_export(c)["state"] in ("done", "error")
+
+
+def test_export_status_has_progress_stage_remaining(client, monkeypatch):
+    import podcast_engine.server as server
+    from podcast_engine.render import RenderReport
+
+    c, tmp = client
+    gate = threading.Event()
+    sent = threading.Event()
+
+    def fake_export(p, base, out, progress=None):
+        progress(0.5, "エフェクト")
+        sent.set()
+        gate.wait(30)
+        return RenderReport(1.0, 48000, -6.0, False)
+
+    monkeypatch.setattr(server, "export", fake_export)
+    assert c.post("/api/export", json={"path": "a.wav"}).status_code == 200
+    first = c.get("/api/export").json()
+    assert {"progress", "stage", "remaining"} <= set(first)
+    assert sent.wait(10)
+    time.sleep(0.05)
+    st = c.get("/api/export").json()
+    assert st["progress"] == 0.5 and st["stage"] == "エフェクト"
+    assert st["remaining"] is not None and st["remaining"] >= 0
+    gate.set()
+    assert _wait_export(c)["state"] == "done"
 
 
 def test_export_error_is_reported(client):

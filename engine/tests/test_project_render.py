@@ -6,7 +6,7 @@ from podcast_engine import cli
 from podcast_engine.project import BgmClip, Edit, Keyframe, Output, Project, Segment, Source, Sync, TrackOffset, Voice
 
 RAW = Output(loudness_lufs=None)  # 音量そのものを確かめるテストではラウドネス調整をしない
-from podcast_engine.render import bgm_envelope, render, render_voice, write
+from podcast_engine.render import bgm_envelope, render, render_voice, voice_keyframe_gain_db, write
 from podcast_engine.synth import SynthTrack, make_session, write_session
 
 FS = 48000
@@ -170,3 +170,54 @@ def test_cli_init_cut_render(tmp_path):
     x, fs = sf.read(tmp_path / "ep.wav")
     assert x.shape[1] == 2
     assert len(x) / fs == pytest.approx(29.0 - 2.5 - 0.01, abs=1e-3)
+
+
+def test_voice_keyframe_gain_helper():
+    kf = [Keyframe(1.0, -60.0), Keyframe(2.0, 0.0)]
+    g = voice_keyframe_gain_db(kf, [0.0, 1.0, 1.5, 2.0, 5.0])
+    assert list(g) == pytest.approx([-60, -60, -30, 0, 0])
+    assert list(voice_keyframe_gain_db([], [0.0, 3.0])) == [0, 0]
+
+
+def test_voice_keyframes_roundtrip():
+    p = Project(sources={"a": Source("a.wav")}, voices=[Voice("a", keyframes=[Keyframe(1.0, -6.0)])])
+    q = Project.from_dict(p.to_dict())
+    assert q.voices[0].keyframes == [Keyframe(1.0, -6.0)]
+    d = p.to_dict()
+    del d["voices"][0]["keyframes"]
+    assert Project.from_dict(d).voices[0].keyframes == []
+
+
+def test_voice_keyframes_apply_by_reference_time(tmp_path):
+    sf.write(tmp_path / "a.wav", np.full(8 * FS, 0.5, dtype=np.float32), FS, subtype="FLOAT")
+    p = Project(
+        sample_rate=FS, sources={"a": Source("a.wav")}, sync=Sync("a"),
+        voices=[Voice("a", keyframes=[Keyframe(1.0, -60.0), Keyframe(2.0, 0.0)])],
+        edit=Edit(segments=[Segment(0.0, 8.0)], crossfade_ms=10), output=RAW,
+    )
+    p.edit.cut(3.0, 4.0)  # 4 秒以降は出力時刻が 1 秒前にずれる
+    x = render_voice(p, p.voices[0], tmp_path, int(7 * FS))
+    assert np.max(np.abs(x[: int(0.9 * FS)])) < 0.5 * 10 ** (-50 / 20)  # 参照 1 秒より前はほぼ無音
+    assert x[int(2.5 * FS)] == pytest.approx(0.5, abs=1e-3)  # 参照 2 秒以降はそのまま
+    # カットの後ろ：出力 3.5 秒 = 参照 4.5 秒 → 0dB のまま
+    assert x[int(3.5 * FS)] == pytest.approx(0.5, abs=1e-3)
+    # 参照 1.5 秒（出力 1.5 秒）は中間の -30dB
+    assert x[int(1.5 * FS)] == pytest.approx(0.5 * 10 ** (-30 / 20), rel=0.02)
+
+
+@pytest.mark.parametrize("ext", ["wav", "mp3"])
+def test_export_progress_monotonic_to_one(tmp_path, ext):
+    from podcast_engine.server import export
+
+    sf.write(tmp_path / "a.wav", (np.random.default_rng(0).standard_normal(3 * FS) * 0.1).astype(np.float32), FS, subtype="FLOAT")
+    p = Project(
+        sample_rate=FS, sources={"a": Source("a.wav")}, sync=Sync("a"),
+        voices=[Voice("a")],
+        edit=Edit(segments=[Segment(0.0, 3.0)]),
+        output=Output(sample_rate=FS, channels=2, loudness_lufs=-14.0, true_peak_dbtp=-1.0),
+    )
+    calls = []
+    export(p, tmp_path, tmp_path / f"o.{ext}", lambda f, s: calls.append((f, s)))
+    fr = [f for f, _ in calls]
+    assert fr == sorted(fr) and fr[-1] == 1.0 and 0.0 <= fr[0] and len(fr) >= 4
+    assert all(isinstance(s, str) and s for _, s in calls)

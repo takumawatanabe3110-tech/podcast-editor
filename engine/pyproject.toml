@@ -21,6 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 # ノイズ除去。DeepFilterNet は新しい torchaudio と合わないので版を固定
 denoise = ["deepfilternet", "torch==2.0.1", "torchaudio==2.0.2"]
+# 話者の声紋。torch は denoise と同じ版を共用（上げ下げしない）
+voiceprint = ["resemblyzer", "webrtcvad-wheels", "librosa", "torch==2.0.1"]
+server = ["fastapi", "uvicorn", "python-multipart"]  # 編集画面のサーバー（アップロードに python-multipart が要る）
 transcribe = ["mlx-whisper"]  # Apple Silicon の Mac のみ
 dev = ["pytest", "zstandard", "pyloudnorm"]  # pyloudnorm はラウドネス測定の照合テスト用
 

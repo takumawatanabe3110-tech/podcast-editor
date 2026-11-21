@@ -7,6 +7,7 @@ export interface Sync { reference: string; tracks: Record<string, TrackOffset> }
 export interface Voice {
   source: string; name: string; gain_db: number; pan: number; mute: boolean
   denoise: unknown; effects: unknown[]
+  keyframes?: Keyframe[] // 音量カーブ（基準時刻の点、dB）。ない回もある
 }
 /** 基準時刻（秒）の区間。カットは「残す区間のリスト」で表す */
 export interface Segment { start: number; end: number }

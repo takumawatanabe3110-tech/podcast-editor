@@ -8,6 +8,14 @@
 - GET  /api/audio/{素材ID}   試聴用の音（24kHz・16bit WAV。声はノイズ除去済み。?raw=1 なら元のまま）
 - POST /api/export           書き出しを裏で始める（.mp3 / .wav）。同時には1つだけ
 - GET  /api/export           書き出しの状況（idle / running / done / error）
+- GET  /api/library          番組の一覧（各番組のエピソード・メンバー・BGM つき）
+- GET/PUT /api/programs/{番組}, POST /api/programs   番組の設定（program.json）・新しい番組
+- POST /api/programs/{番組}/bgm                     BGM をアップロード（role = op / ed など）
+- POST/DELETE /api/programs/{番組}/members/{名前}[/voiceprint]   声紋の登録・メンバーの削除
+- POST /api/programs/{番組}/episodes                新しいエピソード（日付と素材）を作る裏の処理を始める。同時には1つだけ
+- GET  /api/programs/{番組}/episodes/{日付}/status   その進み具合
+- POST /api/open {program, episode}, GET /api/current   開くエピソードの切り替え
+  以下の /api/project などは、いま開いているエピソードに対して働く
 - GET  /api/presets, GET /api/presets/{名前}   プリセットの一覧・中身
 - PUT  /api/presets/{名前}/bgm/{素材ID}        いまの BGM をプリセットに保存
 - PUT  /api/presets/{名前}/effects/{track}     エフェクトをプリセットに保存（voice:0 / bgm / master）
@@ -21,30 +29,40 @@ import hashlib
 import dataclasses
 import json
 import math
+import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 import soundfile as sf
 
-from . import audio_io, effects, presets
+from . import audio_io, effects, library, presets
 from .project import CACHE_DIR, Project
+
+try:  # アップロードの型が実行時に要るので、ここで読む（なくても export など他の機能は使える）
+    from fastapi import Body, File, Form, HTTPException, UploadFile
+except ImportError:  # pragma: no cover
+    pass
 
 PREVIEW_FS = 24000  # 試聴用の音のサンプリングレート（ブラウザのメモリを抑える）
 PEAK_RATE = 50  # 波形の細かさ（1秒あたりの点の数）
 UI_DIST = Path(__file__).resolve().parents[2] / "ui" / "dist"
+DEFAULT_LIBRARY = Path(__file__).resolve().parents[2]  # 番組フォルダが並ぶ場所（既定はリポジトリのルート）
+AUDIO_EXTS = (".wav", ".flac", ".aif", ".aiff")
 
 
-def export(project: Project, base_dir: str | Path, out_path: str | Path):
-    """書き出す（レンダリング→ファイル→MP3 は測り直し）。RenderReport を返す。cmd_render と共用。"""
-    from .render import render, write
+def export(project: Project, base_dir: str | Path, out_path: str | Path, progress=None):
+    """書き出す（レンダリング→ファイル→MP3 は測り直し）。RenderReport を返す。cmd_render と共用。
+    progress(0〜1, 説明) を渡すと進み具合を伝える（後戻りしない）。"""
+    from .render import RENDER_WEIGHT, render, scaled, write
 
-    audio, rep = render(project, Path(base_dir))
+    audio, rep = render(project, Path(base_dir), scaled(progress, 0.0, RENDER_WEIGHT))
     measured = write(
         out_path, audio, rep.sample_rate, project.output.mp3_kbps,
         project.output.loudness_lufs, project.output.true_peak_dbtp,
+        progress=scaled(progress, RENDER_WEIGHT, 1.0),
     )
     if measured is not None:  # MP3 は書いた後に測り直した値を使う
         rep.loudness_lufs, rep.true_peak_dbtp = measured
@@ -100,13 +118,20 @@ class Workspace:
             if self._export["state"] == "running":
                 return False
             started = time.time()
-            self._export = {"state": "running", "path": str(out), "started": started}
+            self._export = {"state": "running", "path": str(out), "started": started,
+                            "progress": 0.0, "stage": "準備しています"}
         threading.Thread(target=self._run_export, args=(out, started), daemon=True).start()
         return True
 
     def _run_export(self, out: Path, started: float) -> None:
         try:
-            rep = export(self.load(), self.base, out)  # 開始時にディスクから読む
+            def on_progress(frac: float, stage: str) -> None:
+                with self._export_lock:
+                    if self._export.get("state") == "running":
+                        self._export["progress"] = max(self._export.get("progress", 0.0), frac)
+                        self._export["stage"] = stage
+
+            rep = export(self.load(), self.base, out, on_progress)  # 開始時にディスクから読む
             res = {
                 "state": "done", "path": str(out), "elapsed": time.time() - started,
                 "report": {k: _num(v) for k, v in dataclasses.asdict(rep).items()},
@@ -121,6 +146,8 @@ class Workspace:
             st = dict(self._export)
         if st["state"] == "running":
             st["elapsed"] = time.time() - st["started"]
+            p = st.get("progress", 0.0)  # 残り時間は経過時間から見積もる（5% 以上進んでから）
+            st["remaining"] = st["elapsed"] * (1 - p) / p if p >= 0.05 else None
         return st
 
     # ---- 計算済みの値
@@ -198,24 +225,88 @@ def _read_mono(path: Path):
         return f.read(f.frames).mean(axis=0), int(f.samplerate)
 
 
-def create_app(project_path: str | Path):
-    from fastapi import Body, FastAPI, HTTPException
+def build_episode(program_dir: Path, date: str, files: List[Path], progress, log=lambda s: None) -> Path:
+    """新しいエピソードを作る一連の処理（同期・初期設定・ノイズ除去・話者判定・文字起こし・波形の準備）。
+    progress(0〜1, 説明)。.podproj のパスを返す。"""
+    prog = library.load_program(program_dir)
+    ep_dir = program_dir / date
+    proj_path = ep_dir / f"{date}.podproj"
+    library.create_episode(
+        [str(f) for f in files], proj_path, preset=prog.get("preset") or None,
+        name=f"{prog.get('name', program_dir.name)} {library._date_text(date)}",
+        bgm_paths=library.program_bgm_paths(prog, program_dir),
+        prints=library.program_prints(prog, program_dir) or None,
+        precompute_denoise=True, progress=progress, log=log,
+    )
+    n_voice = len(files)
+    done = [0]
+
+    def on_log(msg: str) -> None:  # 文字起こしは1トラックずつ。始まるたびに進める
+        log(msg)
+        progress(0.6 + 0.3 * done[0] / max(1, n_voice), msg)
+        done[0] += 1
+
+    progress(0.6, "文字起こしをしています（時間がかかります）")
+    library.transcribe_and_save(proj_path, log=on_log)
+
+    ws = Workspace(proj_path)  # 画面で最初に開くときに待たないよう、波形と試聴用の音を作っておく
+    p = ws.load()
+    targets = [(sid, False) for sid in p.sources] + [(v.source, True) for v in p.voices if v.denoise]
+    for i, (sid, raw) in enumerate(targets):
+        progress(0.9 + 0.1 * i / len(targets), "波形と試聴用の音を準備しています")
+        ws.peaks(p, sid, raw)
+        ws.preview_audio(p, sid, raw)
+    progress(1.0, "できました")
+    return proj_path
+
+
+def guess_library(project_path: Path) -> Optional[Path]:
+    """<root>/<番組>/<日付>/x.podproj の形なら root を返す（番組フォルダに program.json があるとき）。"""
+    d = project_path.resolve().parent
+    if library.DATE_RE.match(d.name) and (d.parent / library.PROGRAM_FILE).is_file():
+        return d.parent.parent
+    return None
+
+
+def create_app(project_path: str | Path | None = None, library_root: str | Path | None = None):
+    from fastapi import FastAPI
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
-    ws = Workspace(project_path)
+    root = Path(library_root) if library_root else None
+    if root is None and project_path:
+        root = guess_library(Path(project_path))
+    root = (root or DEFAULT_LIBRARY).resolve()
+
+    cur: dict = {"ws": None, "program": None, "episode": None}  # いま開いているエピソード
     app = FastAPI(title="podcast-editor")
 
+    def W() -> Workspace:
+        if cur["ws"] is None:
+            raise HTTPException(404, "エピソードを開いていません（POST /api/open で開きます）")
+        return cur["ws"]
+
+    def open_ws(path: Path) -> None:
+        cur["ws"] = Workspace(path)
+        d = cur["ws"].base
+        if library.DATE_RE.match(d.name) and (d.parent / library.PROGRAM_FILE).is_file() and d.parent.parent == root:
+            cur["program"], cur["episode"] = d.parent.name, d.name
+        else:
+            cur["program"] = cur["episode"] = None
+
+    if project_path:
+        open_ws(Path(project_path))
+
     def project_or_404(sid: Optional[str] = None) -> Project:
-        p = ws.load()
+        p = W().load()
         if sid is not None and sid not in p.sources:
             raise HTTPException(404, f"素材 {sid!r} はありません")
         return p
 
     @app.get("/api/project")
     def get_project():
-        p = ws.load()
-        return {"name": ws.path.name, "project": p.to_dict(), "derived": ws.derived(p)}
+        p = W().load()
+        return {"name": W().path.name, "project": p.to_dict(), "derived": W().derived(p)}
 
     @app.put("/api/project")
     def put_project(data: dict = Body(...)):
@@ -226,12 +317,12 @@ def create_app(project_path: str | Path):
         errs = p.validate()
         if errs:
             raise HTTPException(400, "\n".join(errs))
-        p.save(ws.path)
-        return {"name": ws.path.name, "project": p.to_dict(), "derived": ws.derived(p)}
+        p.save(W().path)
+        return {"name": W().path.name, "project": p.to_dict(), "derived": W().derived(p)}
 
     @app.get("/api/transcript")
     def get_transcript():
-        t = ws.transcript_path()
+        t = W().transcript_path()
         if not t.exists():
             raise HTTPException(404, "文字起こしがまだありません（transcribe コマンドで作れます）")
         return json.loads(t.read_text(encoding="utf-8"))
@@ -245,37 +336,37 @@ def create_app(project_path: str | Path):
             tr = Transcript.from_dict(data)
         except (TypeError, ValueError, KeyError) as e:
             raise HTTPException(400, f"文字起こしとして読めません：{e}")
-        tr.save(ws.transcript_path())
-        ws.path.with_suffix(".transcript.txt").write_text(tr.script_text(), encoding="utf-8")
+        tr.save(W().transcript_path())
+        W().path.with_suffix(".transcript.txt").write_text(tr.script_text(), encoding="utf-8")
         return tr.to_dict()
 
     @app.get("/api/peaks/{sid}")
     def get_peaks(sid: str, raw: int = 0):
-        return ws.peaks(project_or_404(sid), sid, bool(raw))
+        return W().peaks(project_or_404(sid), sid, bool(raw))
 
     @app.get("/api/audio/{sid}")
     def get_audio(sid: str, raw: int = 0):
-        return FileResponse(ws.preview_audio(project_or_404(sid), sid, bool(raw)), media_type="audio/wav")
+        return FileResponse(W().preview_audio(project_or_404(sid), sid, bool(raw)), media_type="audio/wav")
 
     @app.post("/api/export")
     def post_export(data: Optional[dict] = Body(None)):
         raw = (data or {}).get("path")
         if raw is not None and not isinstance(raw, str):
             raise HTTPException(400, "path は文字列で指定してください")
-        out = Path(raw).expanduser() if raw else ws.default_export_path()
+        out = Path(raw).expanduser() if raw else W().default_export_path()
         if not out.is_absolute():
-            out = ws.base / out  # 相対パスは .podproj のフォルダから
+            out = W().base / out  # 相対パスは .podproj のフォルダから
         if out.suffix.lower() not in (".mp3", ".wav"):
             raise HTTPException(400, "書き出せるのは .mp3 か .wav です")
         if not out.parent.is_dir():
             raise HTTPException(400, f"保存先のフォルダがありません：{out.parent}")
-        if not ws.start_export(out):
+        if not W().start_export(out):
             raise HTTPException(409, "いま書き出し中です。終わるまでお待ちください")
         return {"state": "running", "path": str(out)}
 
     @app.get("/api/export")
     def get_export():
-        return ws.export_status()
+        return W().export_status()
 
     # ---- プリセット（読み書き）。置き場所は呼ぶたびに presets.PRESET_DIR から決める
 
@@ -293,7 +384,7 @@ def create_app(project_path: str | Path):
     def remember_preset(p: Project, name: str) -> None:
         if not p.preset:
             p.preset = name
-            p.save(ws.path)
+            p.save(W().path)
 
     @app.get("/api/presets")
     def get_presets():
@@ -307,13 +398,13 @@ def create_app(project_path: str | Path):
     def put_preset_bgm(name: str, sid: str):
         """いまのプロジェクトの BGM クリップを、プリセットの同じ名前の BGM に上書き（なければ追加）。"""
         preset = read_preset(name)
-        p = ws.load()
+        p = W().load()
         clip = next((b for b in p.bgm if b.source == sid), None)
         if clip is None:
             raise HTTPException(404, f"BGM {sid!r} はありません")
         items = preset.setdefault("bgm", [])
         idx = next((i for i, b in enumerate(items) if b.get("source") == sid), None)
-        entry = presets.clip_to_preset(p, clip, presets.PRESET_DIR, ws.base, items[idx] if idx is not None else None)
+        entry = presets.clip_to_preset(p, clip, presets.PRESET_DIR, W().base, items[idx] if idx is not None else None)
         if idx is None:
             items.append(entry)
         else:
@@ -336,8 +427,217 @@ def create_app(project_path: str | Path):
         except ValueError as e:
             raise HTTPException(400, str(e))
         presets.save_preset(preset_file(name), preset)
-        remember_preset(ws.load(), name)
+        remember_preset(W().load(), name)
         return {"preset": name, "track": track, "effects": effects_list}
+
+
+    # ---- 番組・エピソードのライブラリ
+
+    def pdir(prog: str) -> Path:
+        try:
+            library.check_name(prog, "番組")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        d = root / prog
+        if not (d / library.PROGRAM_FILE).is_file():
+            raise HTTPException(404, f"番組 {prog!r} がありません")
+        return d
+
+    def program_view(d: Path) -> dict:
+        prog = library.load_program(d)
+        return {
+            "id": d.name, "name": prog.get("name", d.name), "preset": prog.get("preset"),
+            "episodes": library.list_episodes(d), "members": library.member_summary(prog, d),
+            "bgm": prog.get("bgm", {}),
+        }
+
+    def program_view_full(d: Path) -> dict:
+        """program.json の中身（メンバーは enrolled つき）に id と episodes を足したもの。"""
+        return {**library.load_program(d), **program_view(d)}
+
+    @app.get("/api/library")
+    def get_library():
+        return {"root": str(root), "programs": [program_view(Path(x["path"])) for x in library.list_programs(root)]}
+
+    @app.get("/api/programs/{prog}")
+    def get_program(prog: str):
+        return program_view_full(pdir(prog))
+
+    @app.put("/api/programs/{prog}")
+    def put_program(prog: str, data: dict = Body(...)):
+        """番組の設定をまるごと保存（メンバーの追加・名前や役割の変更、BGM の差し替えなど）。"""
+        d = pdir(prog)
+        data = {k: v for k, v in data.items() if k not in ("id", "episodes")}
+        if isinstance(data.get("members"), list):  # 画面用の enrolled は保存しない
+            data["members"] = [{k: v for k, v in m.items() if k != "enrolled"} if isinstance(m, dict) else m
+                               for m in data["members"]]
+        try:
+            library.validate_program(data, d)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        library.save_program(d, data)
+        return program_view_full(d)
+
+    @app.post("/api/programs")
+    def post_program(data: dict = Body(...)):
+        try:
+            d = library.create_program(root, data.get("name"), data.get("preset"))
+        except FileExistsError as e:
+            raise HTTPException(409, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return program_view(d)
+
+    def safe_filename(upload) -> str:
+        name = Path(upload.filename or "").name
+        try:
+            return library.check_name(name, "ファイル名")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    def save_upload(upload, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".part")
+        with open(tmp, "wb") as f:
+            shutil.copyfileobj(upload.file, f)
+        tmp.replace(dest)
+
+    @app.post("/api/programs/{prog}/bgm")
+    def post_program_bgm(prog: str, role: str = Form(...), file: UploadFile = File(...)):
+        d = pdir(prog)
+        try:
+            library.check_name(role, "役割")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        name = safe_filename(file)
+        save_upload(file, d / library.BGM_DIR / name)
+        data = library.load_program(d)
+        data["bgm"][role] = f"{library.BGM_DIR}/{name}"
+        library.save_program(d, data)
+        return {"role": role, "path": data["bgm"][role]}
+
+    @app.post("/api/programs/{prog}/members/{name}/voiceprint")
+    def post_voiceprint(prog: str, name: str, data: dict = Body(...)):
+        d = pdir(prog)
+        try:
+            return library.enroll_voiceprint(d, name, str(data.get("episode", "")), str(data.get("source", "")),
+                                             data.get("role"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except (FileNotFoundError, KeyError) as e:
+            raise HTTPException(404, str(e).strip("'\""))
+
+    @app.delete("/api/programs/{prog}/members/{name}")
+    def delete_member(prog: str, name: str):
+        if not library.remove_member(pdir(prog), name):
+            raise HTTPException(404, f"メンバー {name!r} はいません")
+        return {"removed": name}
+
+    # ---- エピソードを開く
+
+    @app.post("/api/open")
+    def post_open(data: dict = Body(...)):
+        d = pdir(str(data.get("program", "")))
+        eid = str(data.get("episode", ""))
+        try:
+            library.check_name(eid, "エピソード")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        proj = library.episode_project_path(d / eid)
+        if proj is None:
+            raise HTTPException(404, f"エピソード {eid!r} のプロジェクトがありません")
+        open_ws(proj)
+        cur["program"], cur["episode"] = d.name, eid
+        return {"program": d.name, "episode": eid}
+
+    @app.get("/api/current")
+    def get_current():
+        if cur["ws"] is None:
+            return None
+        return {"program": cur["program"], "episode": cur["episode"]}
+
+    # ---- 新しいエピソード（裏の処理。同時には1つだけ）
+
+    jobs: dict = {"lock": threading.Lock(), "current": None, "status": {}}
+
+    def set_job(key, **kw) -> None:
+        with jobs["lock"]:
+            jobs["status"].setdefault(key, {}).update(kw)
+
+    def run_job(key, d: Path, date: str, files: List[Path]) -> None:
+        def progress(frac: float, stage: str) -> None:
+            with jobs["lock"]:
+                st = jobs["status"][key]
+                st["progress"] = max(st.get("progress", 0.0), frac)  # 後戻りしない
+                st["stage"] = stage
+
+        try:
+            build_episode(d, date, files, progress)
+            res = {"state": "done", "stage": "できました", "progress": 1.0, "message": ""}
+        except Exception as e:
+            res = {"state": "error", "message": f"エピソードの作成に失敗しました：{type(e).__name__}: {e}"}
+        with jobs["lock"]:
+            jobs["status"][key].update(res)
+            jobs["current"] = None
+
+    @app.post("/api/programs/{prog}/episodes")
+    def post_episode(prog: str, date: str = Form(...), files: List[UploadFile] = File(...)):
+        d = pdir(prog)
+        try:
+            date = library.valid_date(date)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if len(files) < 2:
+            raise HTTPException(400, "声の素材は2本以上必要です")
+        names = [safe_filename(f) for f in files]
+        if any(Path(n).suffix.lower() not in AUDIO_EXTS for n in names):
+            raise HTTPException(400, "素材は .wav / .flac / .aif / .aiff で指定してください")
+        if len(set(names)) != len(names):
+            raise HTTPException(400, "同じ名前の素材があります")
+        ep_dir = d / date
+        if library.episode_project_path(ep_dir) is not None:
+            raise HTTPException(409, f"{date} のエピソードはすでにあります")
+        key = (d.name, date)
+        with jobs["lock"]:
+            if jobs["current"] is not None:
+                raise HTTPException(409, "いま別のエピソードを作っています。終わるまでお待ちください")
+            jobs["current"] = key
+            jobs["status"][key] = {"state": "running", "stage": "素材を受け取っています", "progress": 0.0,
+                                   "started": time.time(), "message": ""}
+        try:
+            paths = []
+            for f, n in sorted(zip(files, names), key=lambda x: x[1]):  # 1本目（名前順）が同期の基準
+                dest = ep_dir / library.SOURCE_DIR / n
+                save_upload(f, dest)
+                paths.append(dest)
+        except Exception as e:
+            with jobs["lock"]:
+                jobs["status"][key].update(state="error", message=f"素材を保存できませんでした：{e}")
+                jobs["current"] = None
+            raise HTTPException(500, f"素材を保存できませんでした：{e}")
+        threading.Thread(target=run_job, args=(key, d, date, paths), daemon=True).start()
+        return {"state": "running", "program": d.name, "episode": date}
+
+    @app.get("/api/programs/{prog}/episodes/{eid}/status")
+    def get_episode_status(prog: str, eid: str):
+        d = pdir(prog)
+        with jobs["lock"]:
+            st = dict(jobs["status"].get((d.name, eid)) or {})
+        if not st:
+            if not (d / eid).is_dir():
+                raise HTTPException(404, f"エピソード {eid!r} がありません")
+            done = library.episode_project_path(d / eid) is not None
+            return {"state": "done" if done else "idle", "stage": "", "progress": 1.0 if done else 0.0,
+                    "remaining": None, "message": ""}
+        if st["state"] == "running":
+            el = time.time() - st["started"]
+            p = st.get("progress", 0.0)
+            st["remaining"] = el * (1 - p) / p if p >= 0.05 else None  # 5% 進んでから見積もる
+            st["elapsed"] = el
+        else:
+            st["remaining"] = None
+        st.pop("started", None)
+        return st
 
     @app.middleware("http")
     async def no_stale_page(request, call_next):

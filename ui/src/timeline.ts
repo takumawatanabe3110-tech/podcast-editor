@@ -158,6 +158,7 @@ export interface VoicePiece {
   rate: number // 再生速度（ドリフト追従）
   fadeIn: number
   fadeOut: number
+  refStart: number // 鳴らし始めの基準時刻（音量カーブ用）
 }
 
 /** 1本の声素材について、出力時刻 fromOut から再生するための予定表 */
@@ -174,11 +175,13 @@ export function voicePieces(project: Project, sourceId: string, fromOut: number)
     let when = Math.max(0, l.outStart - fromOut)
     let duration = len - skip
     let fileStart = fileTime(project.sync, sourceId, l.start + skip)
+    let refStart = l.start + skip
     if (duration <= 0) return
     if (fileStart < 0) {
       const d = -fileStart / rate
       when += d
       duration -= d
+      refStart += d
       fileStart = 0
       if (duration <= 0) return
     }
@@ -189,6 +192,7 @@ export function voicePieces(project: Project, sourceId: string, fromOut: number)
       rate,
       fadeIn: i > 0 && skip === 0 ? xf : 0,
       fadeOut: i < lay.length - 1 ? xf : 0,
+      refStart,
     })
   })
   return pieces

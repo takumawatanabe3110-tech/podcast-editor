@@ -11,6 +11,14 @@ python3 -m venv .venv
 # 初回の文字起こしで Whisper large-v3-turbo（約1.6GB）を自動ダウンロードする
 ```
 
+任意の追加（使うときだけ入れる）：
+- `voiceprint`：声紋で話者の名前を判定する（resemblyzer など。torch は denoise と同じ 2.0.1）
+- `server`：編集画面のサーバー（fastapi・uvicorn・python-multipart）。`serve` を使うときに必要
+
+```bash
+.venv/bin/pip install -e "engine[server,voiceprint]"
+```
+
 ## 使い方
 
 ```bash
@@ -48,6 +56,19 @@ cd engine
 
 台本・波形・再生・カット・文字の修正ができる。ミキサー（フェーダー・メーター）、BGM の編集、エフェクト画面（EQ・コンプ・ゲート・ノイズ除去を再生しながら調整）、「書き出し（MP3）」ボタン（`render` コマンドと同じ結果）もある。変更はその場で .podproj と .transcript.json に保存される。
 初回は波形と試聴用の音を作るので少し待つ（.podcache/ に保存）。
+
+### 番組と回の一覧で使う
+
+```bash
+cd engine
+../.venv/bin/python -m podcast_engine serve   # 一覧から回を選んで開く（引数なし）
+../.venv/bin/python -m podcast_engine library-init   # 番組フォルダ（program.json）を作る。既定は岡田山ラジオ
+../.venv/bin/python -m podcast_engine init --program ../岡田山ラジオ 青木.wav 内田.wav --out 回.podproj
+```
+
+- `serve` を引数なしで動かすと、番組と回の一覧から選ぶ画面になる。
+- `library-init` は番組フォルダを作る（BGM はプリセットから `BGM/` にコピーされる）。
+- `init --program` は番組の BGM・声紋・いつもの設定を使う。声紋があれば話者に名前が付く（`_1`・`_2` の順に頼らない）。
 
 ### プロジェクトを作って書き出す
 

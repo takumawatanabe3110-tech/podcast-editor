@@ -35,14 +35,15 @@ export function cutGaps(segs: Segment[], total: number): [number, number][] {
 
 // ---------------------------------------------------------------- 全体バー
 
-export function Overview({ project, player, view, total }: { project: Project; player: Player; view: View; total: number }) {
+export function Overview({ project, player, view, total }: { project: Project; player: Player; view?: View; total: number }) {
   const [ref, w] = useWidth<HTMLDivElement>()
   const len = Math.max(total, 1)
   const pct = (t: number) => `${(t / len) * 100}%`
   const lay = layout(project.edit)
   const playOut = usePlayhead(player, t => Math.round((t / len) * Math.max(w, 1) * 2) / 2)
-  const v0 = refToOutOrNext(project.edit, view.start)
-  const v1 = refToOutOrNext(project.edit, view.start + view.span)
+  // view は完成版の時刻（編集画面の表示範囲）
+  const v0 = view ? view.start : 0
+  const v1 = view ? view.start + view.span : 0
   return (
     <div className="overview">
       <div ref={ref} className="ov" role="slider" aria-label="全体の再生位置" aria-valuemin={0} aria-valuemax={len} aria-valuenow={player.position()}
@@ -54,7 +55,7 @@ export function Overview({ project, player, view, total }: { project: Project; p
         })}
         {lay.map((l, i) => <div key={i} style={{ left: pct(l.outStart), width: pct(l.end - l.start), top: 15, height: 6, background: '#2B4466' }} />)}
         {lay.slice(1).map((l, i) => <div key={i} style={{ left: pct(l.outStart), top: 0, bottom: 0, width: 2, background: 'var(--cut-line)' }} />)}
-        <div style={{ left: pct(v0), width: pct(Math.max(v1 - v0, len / 400)), top: 2, bottom: 2, border: '2px solid var(--text)', borderRadius: 4 }} />
+        {view && <div style={{ left: pct(v0), width: pct(Math.max(v1 - v0, len / 400)), top: 2, bottom: 2, border: '2px solid var(--text)', borderRadius: 4 }} />}
         <div style={{ left: playOut, top: 0, bottom: 0, width: 2, background: '#fff' }} />
       </div>
     </div>

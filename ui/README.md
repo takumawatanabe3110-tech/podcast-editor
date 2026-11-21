@@ -18,14 +18,18 @@ npx vitest run     # テスト
 
 ## ファイルの役割
 
-- `src/App.tsx`：全体。読み込み・保存・キー操作（Space、⌘Z など）
+- `src/Root.tsx`：入口。番組と回の一覧か、編集画面かを切り替える
+- `src/LibraryView.tsx`：一覧画面・番組の設定（いつもの設定・BGM・メンバー）
+- `src/library.ts`：番組・回のやり取り（一覧の取得、新しい回づくりの進み具合）
+- `src/App.tsx`：編集画面の全体。読み込み・保存・キー操作（Space、⌘Z など）
+- `src/EditTimeline.tsx`：編集画面のタイムライン（カット・切れ目・区間の端のドラッグ・声の音量の線・BGM の行）
+- `src/nle.ts`：EditTimeline の計算（完成版の時刻と素材の時刻の対応、カット・区間の操作）
 - `src/ScriptPanel.tsx`：台本（行のクリック・選んでカット・文字の修正）
-- `src/TrackView.tsx`：全体バー・波形・ルビ・BGM の音量カーブ
+- `src/TrackView.tsx`：全体バー（時刻の全体表示とクリックで移動）
 - `src/player.ts`：Web Audio による再生（カット・音量・パン・BGM。トラックの音量をその場で変える・メーター・ソロ・範囲の試聴）
 - `src/Mixer.tsx`：ミキサー・書き出しの結果
 - `src/layout.tsx`：欄の広さ（境目のドラッグ・台本の開け閉め）。ブラウザに覚えさせる
-- `src/BgmView.tsx`：②BGM 画面
-- `src/bgmops.ts`：BGM の点・始まり・切る位置・フェードの計算
+- `src/bgmops.ts`：BGM の点・始まり・切る位置・フェードの計算。BGM タブは廃止（BGM の編集は EditTimeline の BGM の行）
 - `src/EffectsView.tsx`：エフェクト画面（一覧・EQ・コンプ・ゲート・ノイズ除去・マスター）
 - `src/presetctx.ts`：いつもの設定を画面で共有する入れ物と、EQ のひな形の一覧
 - `src/fxchain.ts`：トラックのエフェクトを Web Audio の部品で組み立てる

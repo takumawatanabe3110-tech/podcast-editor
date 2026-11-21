@@ -73,9 +73,10 @@ def voice_loudness(project: Project, source_id: str, base_dir: Path) -> float:
 
 def apply_preset(
     project: Project, preset: dict, preset_dir: Path, base_dir: Path,
-    clap_time_ref: Optional[float] = None, names_given: bool = False,
+    clap_time_ref: Optional[float] = None, names_given: bool = False, voices_by_name: bool = False,
 ) -> List[str]:
-    """プロジェクトにプリセットを当てはめる。変更内容の説明（日本語）を返す。"""
+    """プロジェクトにプリセットを当てはめる。変更内容の説明（日本語）を返す。
+    voices_by_name：声の設定を順番でなく名前で選ぶ（名前が合う項目、なければ default_voice）。名前は書き換えない。"""
     notes: List[str] = []
     base_dir = Path(base_dir)
 
@@ -100,7 +101,10 @@ def apply_preset(
     pv = preset.get("voices", [])
     default = preset.get("default_voice", {})
     for i, v in enumerate(project.voices):
-        spec = pv[i] if i < len(pv) else default
+        if voices_by_name:
+            spec = next((x for x in pv if x.get("name") == v.name), default)
+        else:
+            spec = pv[i] if i < len(pv) else default
         if spec.get("name") and not names_given:
             v.name = spec["name"]
         if "denoise" in preset or "denoise" in spec:
