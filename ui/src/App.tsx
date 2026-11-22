@@ -262,7 +262,8 @@ export default function App({ current, onShowList, player: given, active = true,
       if (e.code === 'Space' && !el.closest('textarea, select, [contenteditable], input[type=text], input[type=search], input:not([type])')) {
         e.preventDefault()
         if (el !== document.body) el.blur()
-        if (!e.repeat) player.toggle()
+        // 読み込み中は再生ボタンと同じく効かせない（一覧の MP3 から引き継ぐ途中に、2つの音が重ならないように）
+        if (!e.repeat && !loading) player.toggle()
         return
       }
       if (el.closest('input, textarea, select, [contenteditable]')) return
@@ -273,7 +274,7 @@ export default function App({ current, onShowList, player: given, active = true,
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, player, undo, redo, cutSelected, selected.length, screen, layout.scriptOpen, setLayout])
+  }, [active, loading, player, undo, redo, cutSelected, selected.length, screen, layout.scriptOpen, setLayout])
 
   if (fatal) return <div className="center"><div><b>読み込めませんでした</b><div className="error">{fatal}</div></div></div>
   if (!project) return <div className="center">{loading}</div>

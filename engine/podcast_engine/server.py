@@ -579,14 +579,15 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
         return (time.time() - st["started"]) * (1 - p) / p if p >= 0.05 else None  # 5% 進んでから見積もる
 
     def job_view(key) -> Optional[dict]:
-        """順番待ち・実行中のときの様子（{state, position?, progress?, remaining?}）。なければ None。"""
+        """順番待ち・実行中のときの様子（{state, position?, stage?, progress?, remaining?}）。なければ None。"""
         with jobs["cv"]:
             st = jobs["status"].get(key)
             if not st or st["state"] not in ("queued", "running"):
                 return None
             if st["state"] == "queued":
                 return {"state": "queued", "position": [j["key"] for j in jobs["queue"]].index(key) + 1}
-            return {"state": "running", "progress": st.get("progress", 0.0), "remaining": remaining_of(st)}
+            return {"state": "running", "stage": st.get("stage", ""), "progress": st.get("progress", 0.0),
+                    "remaining": remaining_of(st)}
 
     def episodes_with_jobs(d: Path) -> list:
         eps = library.list_episodes(d)

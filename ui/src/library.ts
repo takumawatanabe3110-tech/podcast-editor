@@ -71,3 +71,18 @@ export interface EpisodeTranscript { lines: TranscriptLine[]; duration?: number 
 export const getEpisodeTranscript = (id: string, ep: string) =>
   fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/transcript`).then(r => json<EpisodeTranscript>(r))
 export const episodeAudioUrl = (id: string, ep: string) => `/api/programs/${enc(id)}/episodes/${enc(ep)}/audio`
+
+/** 回のカードの上の小さな見出し（処理中・順番待ち・書き出し済みなど）。cur＝編集画面で開いている回 */
+export function episodeKicker(ep: Episode, cur: boolean): string {
+  const job = ep.job
+  if (job?.state === 'running') return '処理中'
+  if (job?.state === 'queued') return '順番待ち'
+  if (ep.exported) return cur ? '編集中 ・ MP3 書き出し済み' : 'MP3 書き出し済み'
+  if (ep.has_project) return cur ? '編集中' : 'まだ書き出していません'
+  return '素材のみ'
+}
+
+/** 処理中のバーの下の文字（いまの段階と ◯%） */
+export function progressLabel(job: NonNullable<Episode['job']>): string {
+  return `${job.stage || '処理中'} ・ ${Math.round((job.progress ?? 0) * 100)}%`
+}

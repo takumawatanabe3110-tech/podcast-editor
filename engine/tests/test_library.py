@@ -470,6 +470,7 @@ def test_episode_jobs_queue_fifo(job_env, monkeypatch):
     # 一覧に job が入る
     eps = {e["id"]: e for e in c.get("/api/library").json()["programs"][0]["episodes"]}
     assert eps["20261204"]["job"]["state"] == "running" and eps["20261204"]["job"]["progress"] == 0.5
+    assert eps["20261204"]["job"]["stage"] == "途中"  # 一覧のカードに「処理中 ・ 途中」と出す
     assert eps["20261211"]["job"] == {"state": "queued", "position": 1}
     # 同じ日は 409（実行中も順番待ちも）
     assert post_episode(c, waves, date="20261204").status_code == 409

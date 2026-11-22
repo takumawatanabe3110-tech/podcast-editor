@@ -251,8 +251,7 @@ function EpisodeCard({ prog, ep, sel, cur, playing, canPlay, onSelect, onPlay, o
   const n = openCount(ep)
   const job = ep.job
   const md = /^\d{8}$/.test(ep.id) ? `${ep.id.slice(4, 6)}.${ep.id.slice(6)}` : ep.id
-  const kicker = job?.state === 'running' ? `処理中 ・ ${job.stage ?? ''}` : job?.state === 'queued' ? '順番待ち'
-    : ep.exported ? (cur ? '編集中 ・ MP3 書き出し済み' : 'MP3 書き出し済み') : ep.has_project ? (cur ? '編集中' : 'まだ書き出していません') : '素材のみ'
+  const kicker = lib.episodeKicker(ep, cur)
   const pct = Math.round((job?.progress ?? 0) * 100)
   return (
     <div className={`lib-ep${sel ? ' sel' : ''}`} onClick={onSelect} role="button" tabIndex={0} aria-pressed={sel}
@@ -271,7 +270,7 @@ function EpisodeCard({ prog, ep, sel, cur, playing, canPlay, onSelect, onPlay, o
         {job?.state === 'running' && (
           <div className="lib-progress">
             <div className="track"><div className="fill" style={{ width: `${pct}%` }}><span className="shim" /></div></div>
-            <span>{job.stage ?? '処理中'} ・ {pct}%</span>
+            <span>{lib.progressLabel(job)}</span>
           </div>
         )}
       </div>
