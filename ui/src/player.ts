@@ -218,6 +218,13 @@ export class Player {
 
   toggle() { if (this.playing) this.pause(); else this.play() }
 
+  /** もう使わない（別の回を開いた）。音を止めて片付ける */
+  dispose() {
+    if (this.playing) this.pause()
+    this.listeners.clear()
+    void this.ctx.close().catch(() => {})
+  }
+
   play() {
     if (!this.project) return
     let t = this.pausedAt

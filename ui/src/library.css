@@ -1,0 +1,188 @@
+/* 一覧画面（案D：すりガラス）。色は styles.css の :root の変数（ダーク／ライト）を使う */
+.lib { height: 100%; padding: 20px; box-sizing: border-box; }
+.lib-frame { height: 100%; display: grid; grid-template-columns: 236px minmax(0, 1fr) minmax(320px, 420px); gap: 16px; padding: 16px; backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); }
+.lib .center { height: auto; padding: 40px 0; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.lib-muted { font-size: 12px; color: var(--sub); line-height: 1.6; }
+.lib-mono { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; }
+.lib-err { padding: 10px 14px; border-radius: 14px; background: var(--bad-bg); color: var(--bad); font-size: 13px; cursor: pointer; }
+
+/* 左：番組 */
+.lib-nav { display: flex; flex-direction: column; gap: 4px; padding: 8px 4px; min-height: 0; }
+.lib-brand { display: flex; align-items: center; gap: 12px; padding: 4px 8px 20px; }
+.lib-brand b { font-size: 17px; color: var(--accent-text); }
+.lib-logo { width: 42px; height: 42px; border-radius: 14px; background: var(--glass-strong); display: grid; place-items: center; color: var(--accent-2); box-shadow: 0 6px 16px var(--shadow); }
+.lib-navlabel { font-size: 11px; color: var(--sub); padding: 0 12px 4px; letter-spacing: 0.06em; }
+.lib-progs { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; }
+.lib-prog { display: flex; flex-direction: column; gap: 2px; }
+.lib-progbtn { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 14px; border: none; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.lib-progbtn:hover { background: var(--hover); }
+.lib-progbtn.sel { background: var(--glass-strong); color: var(--accent-text); box-shadow: 0 4px 14px var(--shadow); }
+.lib-tile { flex: none; width: 30px; height: 30px; border-radius: 9px; color: #fff; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+.lib-progtext { display: flex; flex-direction: column; min-width: 0; }
+.lib-progtext b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-progtext small { font-size: 11px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-chev { flex: none; margin-left: auto; display: grid; transition: transform 0.2s; }
+.lib-chev.open { transform: rotate(180deg); }
+.lib-sub { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 8px 24px; padding-left: 10px; border-left: 1.5px solid var(--glass-line); }
+.lib-subbtn { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; border: none; background: transparent; color: var(--sub); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.lib-subbtn:hover { background: var(--hover); color: var(--text); }
+.lib-subbtn.on { background: var(--now-bg); color: var(--accent-text); font-weight: 700; }
+.lib-badge { margin-left: auto; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: var(--now-bg); color: var(--accent-text); font-size: 12px; display: grid; place-items: center; }
+.lib-badge.warn { background: var(--warn-bg); color: var(--warn); }
+.lib-add { margin-top: auto; flex: none; height: 44px; border-radius: 14px; border: 1.5px dashed var(--now-line); background: transparent; color: var(--accent-text); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.lib-add:hover { background: var(--now-bg); }
+
+/* 真ん中：回の一覧 */
+.lib-main { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-radius: 26px; background: var(--glass); border: 1px solid var(--glass-line); overflow: hidden; }
+.lib-drop { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px; padding: 16px 18px; overflow-y: auto; }
+.lib-search { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 16px; border-radius: 16px; background: var(--chip-bg); color: var(--sub); flex: none; }
+.lib-search input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; font: inherit; color: var(--text); }
+.lib-head { display: flex; flex-direction: column; gap: 4px; flex: none; }
+.lib-head h1 { margin: 0; font-size: 28px; font-weight: 900; letter-spacing: -0.01em; }
+.lib-head span { color: var(--sub); font-size: 13px; }
+.lib-filters { display: flex; flex-wrap: wrap; gap: 8px; flex: none; }
+.lib-filters button { height: 34px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--glass-line); background: var(--chip-bg); color: var(--sub); font: inherit; font-size: 13px; cursor: pointer; }
+.lib-filters button[aria-pressed='true'] { background: var(--seg-bg); color: var(--seg-fg); border-color: transparent; }
+.lib-eps { display: flex; flex-direction: column; gap: 12px; }
+.lib-none { padding: 24px; text-align: center; color: var(--sub); }
+.lib-ep { display: grid; grid-template-columns: 104px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px; border-radius: 22px; border: 1px solid var(--glass-line); background: var(--glass); cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
+.lib-ep:hover { background: var(--hover); }
+.lib-ep.sel { background: var(--glass-strong); border-color: var(--now-line); box-shadow: 0 14px 34px var(--shadow); }
+.lib-ep:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lib-cover { position: relative; height: 84px; border-radius: 16px; overflow: clip; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px; box-sizing: border-box; color: #FFF6EE; }
+.lib-cover .ring { position: absolute; right: -18px; top: -18px; width: 70px; height: 70px; border-radius: 50%; border: 10px solid rgba(255, 255, 255, 0.28); }
+.lib-cover b { font-size: 22px; line-height: 1; font-variant-numeric: tabular-nums; position: relative; }
+.lib-cover small { font-size: 10px; opacity: 0.85; position: relative; }
+.lib-coverplay { position: absolute; right: 8px; top: 8px; width: 34px; height: 34px; border-radius: 50%; border: none; background: rgba(255, 255, 255, 0.92); color: #2A2440; display: grid; place-items: center; cursor: pointer; box-shadow: 0 6px 14px rgba(0, 0, 0, 0.25); }
+.lib-epinfo { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lib-epinfo b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-kicker, .lib-meta { font-size: 12px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-progress { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
+.lib-progress .track { position: relative; height: 6px; border-radius: 3px; background: var(--chip-bg); overflow: hidden; }
+.lib-progress .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent-grad); overflow: hidden; transition: width 0.6s ease; }
+.lib-progress .shim { position: absolute; top: 0; bottom: 0; width: 40%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent); animation: lib-shim 1.6s ease-in-out infinite; }
+.lib-progress > span { font-size: 11px; color: var(--accent-text); }
+.lib-epchip { align-self: start; }
+.lib-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 10px; font-size: 12px; font-weight: 700; white-space: nowrap; background: var(--chip-bg); color: var(--sub); }
+.lib-chip.busy { background: var(--now-bg); color: var(--accent-text); }
+.lib-chip.warn { background: var(--warn-bg); color: var(--warn); }
+.lib-chip.ok { background: var(--ok-bg); color: var(--ok); }
+.spin { width: 9px; height: 9px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: lib-spin 0.9s linear infinite; }
+@keyframes lib-spin { to { transform: rotate(360deg); } }
+@keyframes lib-shim { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+@media (prefers-reduced-motion: reduce) { .spin, .lib-progress .shim { animation: none; } }
+.lib-link { border: none; background: none; padding: 0; color: inherit; font: inherit; font-weight: 400; text-decoration: underline; cursor: pointer; }
+.lib-hint { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px; border-radius: 18px; border: 1.5px dashed var(--now-line); background: var(--lane-bg); color: var(--sub); font-size: 13px; text-align: center; flex: none; }
+.lib-pick { align-self: center; font-size: 12px; color: var(--sub); text-decoration: underline; cursor: pointer; flex: none; margin-top: -6px; }
+.lib-overlay { position: absolute; inset: 8px; z-index: 3; border-radius: 22px; border: 2px dashed var(--accent); background: var(--scrim); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text); text-align: center; pointer-events: none; }
+.lib-overlay b { font-size: 20px; }
+.lib-overlay span:last-child { font-size: 13px; opacity: 0.85; }
+.lib-overicon { width: 72px; height: 72px; border-radius: 24px; background: var(--accent-grad); color: #fff; display: grid; place-items: center; box-shadow: 0 14px 30px rgba(91, 91, 214, 0.45); }
+.lib-overicon svg { width: 32px; height: 32px; }
+
+/* 再生バー（Spotify の下の再生バーを参考に） */
+.lib-player { position: sticky; bottom: -16px; margin: auto -6px -4px; flex: none; z-index: 2; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1fr); align-items: center; gap: 16px; padding: 10px 14px; border-radius: 20px; background: var(--modal); border: 1px solid var(--glass-line); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 -10px 30px var(--shadow); }
+.lib-pinfo { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.lib-pinfo > div:last-child { display: flex; flex-direction: column; min-width: 0; }
+.lib-pinfo b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-pinfo small { font-size: 12px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-pcover { flex: none; width: 48px; height: 48px; border-radius: 10px; color: #FFF6EE; display: grid; place-items: center; font-weight: 800; font-size: 13px; font-variant-numeric: tabular-nums; }
+.lib-pctl { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+.lib-pbtns { display: flex; align-items: center; gap: 18px; }
+.lib-pbtns button { width: 32px; height: 32px; border: none; background: transparent; color: var(--sub); display: grid; place-items: center; cursor: pointer; padding: 0; }
+.lib-pbtns button:hover { color: var(--text); }
+.lib-pbtns .lib-pplay { width: 40px; height: 40px; border-radius: 50%; background: var(--seg-bg); color: var(--seg-fg); }
+.lib-pbtns .lib-pplay:hover { color: var(--seg-fg); transform: scale(1.05); }
+.lib-pseek { width: 100%; display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--sub); font-variant-numeric: tabular-nums; }
+.lib-ptrack { position: relative; flex: 1; height: 4px; border-radius: 2px; background: var(--chip-bg); cursor: pointer; }
+.lib-ptrack::before { content: ''; position: absolute; inset: -8px 0; }
+.lib-ptrack .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--text); }
+.lib-ptrack .knob { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--text); opacity: 0; transition: opacity 0.15s; }
+.lib-ptrack:hover .knob, .lib-ptrack:focus-visible .knob { opacity: 1; }
+.lib-ptrack:hover .fill { background: var(--accent); }
+.lib-pextra { display: flex; align-items: center; justify-content: flex-end; gap: 10px; color: var(--sub); min-width: 0; }
+.lib-rate { height: 28px; padding: 0 9px; border-radius: 8px; border: none; background: var(--chip-bg); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; font-variant-numeric: tabular-nums; }
+.lib-vol { width: 84px; accent-color: var(--text); }
+
+/* 右：選んだ回 */
+.lib-side { min-height: 0; display: flex; flex-direction: column; gap: 14px; padding: 18px; border-radius: 26px; background: var(--glass); border: 1px solid var(--glass-line); box-shadow: 0 12px 40px var(--shadow); }
+.lib-empty { color: var(--sub); }
+.lib-sidehead { display: flex; flex-direction: column; gap: 4px; }
+.lib-sidehead span { font-size: 12px; color: var(--sub); }
+.lib-sidehead b { font-size: 20px; }
+.lib-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.lib-stats > div { padding: 10px; border-radius: 16px; background: var(--chip-bg); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lib-stats span { font-size: 11px; color: var(--sub); }
+.lib-stats b { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-stats b.warn { color: var(--warn); }
+.lib-review { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 16px; background: var(--warn-bg); }
+.lib-review > b { font-size: 13px; color: var(--warn); }
+.lib-finding { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 13px; line-height: 1.5; }
+.lib-time { border: none; background: none; padding: 0; color: var(--warn); font: inherit; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; }
+.lib-time:disabled { cursor: default; }
+.lib-finding .lib-link { font-size: 12px; color: var(--sub); }
+.lib-trhead { font-size: 15px; }
+.lib-lines { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; margin: 0 -6px; padding: 0 6px; }
+.lib-line { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 9px 10px; border-radius: 14px; border: 1px solid transparent; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.lib-line:disabled { cursor: default; }
+.lib-line:not(:disabled):hover { background: var(--hover); }
+.lib-line.now { background: var(--now-bg); border-color: var(--now-line); }
+.lib-line .av, .lib-member .av { width: 34px; height: 34px; border-radius: 12px; color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 13px; }
+.lib-line .tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lib-line .tx small { font-size: 12px; color: var(--sub); }
+.lib-line .tx span { font-size: 13px; line-height: 1.6; word-break: break-all; }
+.lib-line .tm { font-size: 11px; color: var(--sub); font-variant-numeric: tabular-nums; padding-top: 2px; }
+.lib-open { flex: none; height: 46px; border-radius: 14px; border: 1px solid var(--glass-line); background: var(--chip-bg); color: var(--text); font: inherit; font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; }
+.lib-open:not(:disabled):hover { background: var(--accent-grad); color: #fff; border-color: transparent; }
+.lib-open:disabled { opacity: 0.45; cursor: default; }
+
+/* ダイアログ・設定 */
+.lib-scrim { position: fixed; inset: 0; z-index: 20; background: var(--scrim); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); display: grid; place-items: center; padding: 20px; }
+.lib-modal { width: min(520px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; box-sizing: border-box; border-radius: 28px; padding: 24px; background: var(--modal); border: 1px solid var(--glass-line); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); box-shadow: 0 30px 80px var(--shadow); display: flex; flex-direction: column; gap: 14px; color: var(--text); }
+.lib-modal.wide { width: min(580px, 100%); gap: 18px; }
+.lib-modal h2 { margin: 0; font-size: 20px; }
+.lib-modalhead { display: flex; align-items: center; justify-content: space-between; }
+.lib-x { width: 36px; height: 36px; border-radius: 12px; border: none; background: var(--chip-bg); color: var(--text); cursor: pointer; flex: none; }
+.lib-x.sm { width: 28px; height: 28px; border-radius: 9px; font-size: 11px; }
+.lib-files { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.lib-files li { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: 12px; background: var(--chip-bg); font-size: 13px; }
+.lib-field { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+.lib-field > span:first-child { min-width: 96px; color: var(--sub); }
+.lib-col { display: flex; flex-direction: column; gap: 8px; }
+.lib-col > span:first-child { font-size: 12px; color: var(--sub); }
+.lib-modal input:not([type]), .lib-modal input[type='text'], .lib-field input, .lib-field select, .lib-member input, .lib-member select, .lib-col > input {
+  height: 42px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--glass-line); background: var(--chip-bg); color: var(--text); font: inherit; font-size: 14px; outline: none; min-width: 0; }
+.lib-modal input:focus, .lib-field input:focus, .lib-member input:focus { border-color: var(--accent); }
+.lib-member select, .lib-field select { padding-right: 10px; }
+.lib-bgms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.lib-bgm { padding: 12px; border-radius: 14px; border: 1.5px dashed var(--now-line); display: flex; flex-direction: column; gap: 2px; color: var(--sub); cursor: pointer; min-width: 0; }
+.lib-bgm.has { border-style: solid; border-color: var(--glass-line); background: var(--chip-bg); color: var(--text); }
+.lib-bgm small { font-size: 11px; color: var(--sub); }
+.lib-bgm b { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-member { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 14px; background: var(--lane-bg); border: 1px solid var(--glass-line); }
+.lib-member input { flex: 1; height: 36px; }
+.lib-member .av { width: 30px; height: 30px; border-radius: 10px; font-size: 12px; flex: none; }
+.lib-dashed { height: 38px; border-radius: 12px; border: 1.5px dashed var(--now-line); background: transparent; color: var(--accent-text); font: inherit; font-size: 13px; cursor: pointer; }
+.lib-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: flex-end; }
+.lib-btn { height: 42px; padding: 0 18px; border-radius: 14px; border: none; background: var(--chip-bg); color: var(--text); font: inherit; font-size: 14px; cursor: pointer; display: inline-flex; align-items: center; }
+.lib-btn.primary { background: var(--accent-grad); color: #fff; font-weight: 700; padding: 0 22px; }
+.lib-btn:disabled { opacity: 0.5; cursor: default; }
+.lib-settings { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 18px; }
+.lib-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 20px; background: var(--glass); border: 1px solid var(--glass-line); }
+.lib-card h2 { margin: 0; font-size: 16px; }
+
+/* 狭い画面：右の欄を下に回す */
+@media (max-width: 1180px) {
+  .lib-frame { grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 420px); height: auto; min-height: 100%; }
+  .lib-side { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  .lib { padding: 10px; }
+  .lib-frame { grid-template-columns: minmax(0, 1fr); padding: 10px; }
+  .lib-nav { max-height: 260px; }
+  .lib-player { grid-template-columns: minmax(0, 1fr); }
+  .lib-pextra { display: none; }
+  .lib-ep { grid-template-columns: 72px minmax(0, 1fr); }
+  .lib-epchip { grid-column: 2; }
+}

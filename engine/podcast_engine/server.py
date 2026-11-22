@@ -12,8 +12,12 @@
 - GET/PUT /api/programs/{番組}, POST /api/programs   番組の設定（program.json）・新しい番組
 - POST /api/programs/{番組}/bgm                     BGM をアップロード（role = op / ed など）
 - POST/DELETE /api/programs/{番組}/members/{名前}[/voiceprint]   声紋の登録・メンバーの削除
-- POST /api/programs/{番組}/episodes                新しいエピソード（日付と素材）を作る裏の処理を始める。同時には1つだけ
-- GET  /api/programs/{番組}/episodes/{日付}/status   その進み具合
+- POST /api/programs/{番組}/episodes                新しいエピソード（日付と素材）を順番待ちに入れる。裏では1つずつ（先に入れた順）
+- GET  /api/programs/{番組}/episodes/{日付}/status   その状況（queued / running / done / error / idle、要確認つき）
+- DELETE /api/programs/{番組}/episodes/{日付}/job    順番待ちの取り消し（実行中は不可。素材は残す）
+- GET  /api/programs/{番組}/episodes/{日付}/transcript   書き出した音声の時刻に合わせた文字起こし（一覧で聴きながら読む用）
+- GET  /api/jobs                                    実行中と順番待ちの一覧
+- POST/PUT /api/programs/{番組}/episodes/{日付}/review   要確認の作り直し／解決済みにする
 - POST /api/open {program, episode}, GET /api/current   開くエピソードの切り替え
   以下の /api/project などは、いま開いているエピソードに対して働く
 - GET  /api/presets, GET /api/presets/{名前}   プリセットの一覧・中身
@@ -225,19 +229,25 @@ def _read_mono(path: Path):
         return f.read(f.frames).mean(axis=0), int(f.samplerate)
 
 
-def build_episode(program_dir: Path, date: str, files: List[Path], progress, log=lambda s: None) -> Path:
+def build_episode(program_dir: Path, date: str, files: List[Path], progress, log=lambda s: None,
+                  names: Optional[List[str]] = None, title: Optional[str] = None) -> Path:
     """新しいエピソードを作る一連の処理（同期・初期設定・ノイズ除去・話者判定・文字起こし・波形の準備）。
-    progress(0〜1, 説明)。.podproj のパスを返す。"""
+    progress(0〜1, 説明)。.podproj のパスを返す。要確認は review.json に保存する。
+    names（files と同じ順）を渡すと、声紋での名前付けはせずその名前を使う。"""
     prog = library.load_program(program_dir)
     ep_dir = program_dir / date
     proj_path = ep_dir / f"{date}.podproj"
-    library.create_episode(
+    prints = None if names else (library.program_prints(prog, program_dir) or None)
+    res = library.create_episode(
         [str(f) for f in files], proj_path, preset=prog.get("preset") or None,
-        name=f"{prog.get('name', program_dir.name)} {library._date_text(date)}",
-        bgm_paths=library.program_bgm_paths(prog, program_dir),
-        prints=library.program_prints(prog, program_dir) or None,
-        precompute_denoise=True, progress=progress, log=log,
+        name=title or f"{prog.get('name', program_dir.name)} {library._date_text(date)}",
+        names=names, bgm_paths=library.program_bgm_paths(prog, program_dir),
+        prints=prints, precompute_denoise=True, progress=progress, log=log,
     )
+    findings = library.sync_findings(res["sync"])
+    if res.get("embs") and prints:
+        findings += library.voiceprint_findings(res["project"], res["embs"], prints)
+    library.save_review(ep_dir, findings)
     n_voice = len(files)
     done = [0]
 
@@ -248,6 +258,10 @@ def build_episode(program_dir: Path, date: str, files: List[Path], progress, log
 
     progress(0.6, "文字起こしをしています（時間がかかります）")
     library.transcribe_and_save(proj_path, log=on_log)
+    from .transcribe import Transcript
+
+    tr = Transcript.load(proj_path.with_suffix(".transcript.json"))
+    library.save_review(ep_dir, findings + library.transcript_findings(tr, Project.load(proj_path)))
 
     ws = Workspace(proj_path)  # 画面で最初に開くときに待たないよう、波形と試聴用の音を作っておく
     p = ws.load()
@@ -447,7 +461,7 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
         prog = library.load_program(d)
         return {
             "id": d.name, "name": prog.get("name", d.name), "preset": prog.get("preset"),
-            "episodes": library.list_episodes(d), "members": library.member_summary(prog, d),
+            "episodes": episodes_with_jobs(d), "members": library.member_summary(prog, d),
             "bgm": prog.get("bgm", {}),
         }
 
@@ -556,32 +570,65 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
             return None
         return {"program": cur["program"], "episode": cur["episode"]}
 
-    # ---- 新しいエピソード（裏の処理。同時には1つだけ）
+    # ---- 新しいエピソード（順番待ち。裏のスレッドが先に入れた順に1つずつ）
 
-    jobs: dict = {"lock": threading.Lock(), "current": None, "status": {}}
+    jobs: dict = {"cv": threading.Condition(), "queue": [], "running": None, "status": {}, "worker": None}
 
-    def set_job(key, **kw) -> None:
-        with jobs["lock"]:
-            jobs["status"].setdefault(key, {}).update(kw)
+    def remaining_of(st: dict) -> Optional[float]:
+        p = st.get("progress", 0.0)
+        return (time.time() - st["started"]) * (1 - p) / p if p >= 0.05 else None  # 5% 進んでから見積もる
 
-    def run_job(key, d: Path, date: str, files: List[Path]) -> None:
+    def job_view(key) -> Optional[dict]:
+        """順番待ち・実行中のときの様子（{state, position?, progress?, remaining?}）。なければ None。"""
+        with jobs["cv"]:
+            st = jobs["status"].get(key)
+            if not st or st["state"] not in ("queued", "running"):
+                return None
+            if st["state"] == "queued":
+                return {"state": "queued", "position": [j["key"] for j in jobs["queue"]].index(key) + 1}
+            return {"state": "running", "progress": st.get("progress", 0.0), "remaining": remaining_of(st)}
+
+    def episodes_with_jobs(d: Path) -> list:
+        eps = library.list_episodes(d)
+        for e in eps:
+            j = job_view((d.name, e["id"]))
+            if j:
+                e["job"] = j
+        return eps
+
+    def run_job(job: dict) -> None:
+        key = job["key"]
+
         def progress(frac: float, stage: str) -> None:
-            with jobs["lock"]:
+            with jobs["cv"]:
                 st = jobs["status"][key]
                 st["progress"] = max(st.get("progress", 0.0), frac)  # 後戻りしない
                 st["stage"] = stage
 
         try:
-            build_episode(d, date, files, progress)
+            extra = {k: job[k] for k in ("names", "title") if job.get(k)}
+            build_episode(job["dir"], job["date"], job["files"], progress, **extra)
             res = {"state": "done", "stage": "できました", "progress": 1.0, "message": ""}
         except Exception as e:
             res = {"state": "error", "message": f"エピソードの作成に失敗しました：{type(e).__name__}: {e}"}
-        with jobs["lock"]:
+        with jobs["cv"]:
             jobs["status"][key].update(res)
-            jobs["current"] = None
+            jobs["running"] = None
+
+    def worker() -> None:
+        while True:
+            with jobs["cv"]:
+                while not jobs["queue"]:
+                    jobs["cv"].wait()
+                job = jobs["queue"].pop(0)
+                jobs["running"] = job["key"]
+                jobs["status"][job["key"]].update(state="running", stage="始めています", progress=0.0,
+                                                  started=time.time())
+            run_job(job)
 
     @app.post("/api/programs/{prog}/episodes")
-    def post_episode(prog: str, date: str = Form(...), files: List[UploadFile] = File(...)):
+    def post_episode(prog: str, date: str = Form(...), files: List[UploadFile] = File(...),
+                     names: Optional[str] = Form(None), title: Optional[str] = Form(None)):
         d = pdir(prog)
         try:
             date = library.valid_date(date)
@@ -589,55 +636,166 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
             raise HTTPException(400, str(e))
         if len(files) < 2:
             raise HTTPException(400, "声の素材は2本以上必要です")
-        names = [safe_filename(f) for f in files]
-        if any(Path(n).suffix.lower() not in AUDIO_EXTS for n in names):
+        fnames = [safe_filename(f) for f in files]
+        if any(Path(n).suffix.lower() not in AUDIO_EXTS for n in fnames):
             raise HTTPException(400, "素材は .wav / .flac / .aif / .aiff で指定してください")
-        if len(set(names)) != len(names):
+        if len(set(fnames)) != len(fnames):
             raise HTTPException(400, "同じ名前の素材があります")
+        who = None  # 話者の名前（files と同じ順）。空なら無視
+        if names and names.strip():
+            try:
+                who = json.loads(names)
+            except ValueError:
+                raise HTTPException(400, "names は JSON の配列で指定してください")
+            if not isinstance(who, list) or not all(isinstance(x, str) for x in who):
+                raise HTTPException(400, "names は文字列の配列で指定してください")
+            if not any(x.strip() for x in who):
+                who = None
+            elif len(who) != len(files):
+                raise HTTPException(400, "names の数が素材の数と違います")
         ep_dir = d / date
         if library.episode_project_path(ep_dir) is not None:
             raise HTTPException(409, f"{date} のエピソードはすでにあります")
         key = (d.name, date)
-        with jobs["lock"]:
-            if jobs["current"] is not None:
-                raise HTTPException(409, "いま別のエピソードを作っています。終わるまでお待ちください")
-            jobs["current"] = key
-            jobs["status"][key] = {"state": "running", "stage": "素材を受け取っています", "progress": 0.0,
-                                   "started": time.time(), "message": ""}
+        with jobs["cv"]:
+            if (jobs["status"].get(key) or {}).get("state") in ("queued", "running"):
+                raise HTTPException(409, f"{date} のエピソードはすでに順番待ち（または作成中）です")
+            jobs["status"][key] = {"state": "queued", "message": ""}  # 保存中に重ならないよう先に印を付ける
+        order = sorted(range(len(files)), key=lambda i: fnames[i])  # 1本目（名前順）が同期の基準
         try:
             paths = []
-            for f, n in sorted(zip(files, names), key=lambda x: x[1]):  # 1本目（名前順）が同期の基準
-                dest = ep_dir / library.SOURCE_DIR / n
-                save_upload(f, dest)
+            for i in order:
+                dest = ep_dir / library.SOURCE_DIR / fnames[i]
+                save_upload(files[i], dest)
                 paths.append(dest)
         except Exception as e:
-            with jobs["lock"]:
-                jobs["status"][key].update(state="error", message=f"素材を保存できませんでした：{e}")
-                jobs["current"] = None
+            with jobs["cv"]:
+                jobs["status"][key] = {"state": "error", "message": f"素材を保存できませんでした：{e}"}
             raise HTTPException(500, f"素材を保存できませんでした：{e}")
-        threading.Thread(target=run_job, args=(key, d, date, paths), daemon=True).start()
-        return {"state": "running", "program": d.name, "episode": date}
+        job = {"key": key, "dir": d, "date": date, "files": paths, "title": (title or "").strip() or None,
+               "names": [(who[i].strip() or f"voice{n + 1}") for n, i in enumerate(order)] if who else None}
+        with jobs["cv"]:
+            jobs["queue"].append(job)
+            position = len(jobs["queue"])  # 順番待ちの中での番号（1 から）
+            if jobs["worker"] is None:
+                jobs["worker"] = threading.Thread(target=worker, daemon=True)
+                jobs["worker"].start()
+            jobs["cv"].notify()
+        return {"state": "queued", "program": d.name, "episode": date, "position": position}
+
+    @app.get("/api/jobs")
+    def get_jobs():
+        with jobs["cv"]:
+            running = None
+            if jobs["running"]:
+                st = jobs["status"][jobs["running"]]
+                running = {"program": jobs["running"][0], "episode": jobs["running"][1],
+                           "stage": st.get("stage", ""), "progress": st.get("progress", 0.0),
+                           "remaining": remaining_of(st)}
+            queued = [{"program": j["key"][0], "episode": j["key"][1], "position": i + 1}
+                      for i, j in enumerate(jobs["queue"])]
+        return {"running": running, "queued": queued}
+
+    @app.delete("/api/programs/{prog}/episodes/{eid}/job")
+    def delete_job(prog: str, eid: str):
+        key = (pdir(prog).name, eid)
+        with jobs["cv"]:
+            st = jobs["status"].get(key) or {}
+            if st.get("state") == "running":
+                raise HTTPException(409, "作成中のものは取り消せません")
+            hit = [j for j in jobs["queue"] if j["key"] == key]
+            if not hit:
+                raise HTTPException(404, f"{eid} は順番待ちにありません")
+            jobs["queue"].remove(hit[0])
+            jobs["status"].pop(key, None)
+        return {"cancelled": eid}
 
     @app.get("/api/programs/{prog}/episodes/{eid}/status")
     def get_episode_status(prog: str, eid: str):
         d = pdir(prog)
-        with jobs["lock"]:
+        with jobs["cv"]:
             st = dict(jobs["status"].get((d.name, eid)) or {})
+        review = library.load_review(d / eid) if library.DATE_RE.match(eid) else []
         if not st:
             if not (d / eid).is_dir():
                 raise HTTPException(404, f"エピソード {eid!r} がありません")
             done = library.episode_project_path(d / eid) is not None
             return {"state": "done" if done else "idle", "stage": "", "progress": 1.0 if done else 0.0,
-                    "remaining": None, "message": ""}
+                    "remaining": None, "message": "", "review": review}
+        out = {"state": st["state"], "stage": st.get("stage", ""), "progress": st.get("progress", 0.0),
+               "remaining": None, "message": st.get("message", ""), "review": review}
         if st["state"] == "running":
-            el = time.time() - st["started"]
-            p = st.get("progress", 0.0)
-            st["remaining"] = el * (1 - p) / p if p >= 0.05 else None  # 5% 進んでから見積もる
-            st["elapsed"] = el
-        else:
-            st["remaining"] = None
-        st.pop("started", None)
-        return st
+            out["remaining"] = remaining_of(st)
+            out["elapsed"] = time.time() - st["started"]
+        elif st["state"] == "queued":
+            out["position"] = job_view((d.name, eid))["position"]
+        return out
+
+    @app.get("/api/programs/{prog}/episodes/{eid}/audio")
+    def get_episode_export(prog: str, eid: str):
+        """書き出した完成版（mp3、なければ wav）。一覧で聴く用"""
+        d = pdir(prog)
+        try:
+            library.check_name(eid, "エピソード")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        for ext, mt in ((".mp3", "audio/mpeg"), (".wav", "audio/wav")):
+            f = d / eid / f"{eid}{ext}"
+            if f.is_file():
+                return FileResponse(f, media_type=mt)
+        raise HTTPException(404, f"{eid} はまだ書き出していません")
+
+    @app.get("/api/programs/{prog}/episodes/{eid}/transcript")
+    def get_episode_transcript(prog: str, eid: str):
+        """書き出した音声（出力時刻）に合わせた文字起こし。一覧の画面用"""
+        d = pdir(prog)
+        try:
+            library.check_name(eid, "エピソード")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        pp = library.episode_project_path(d / eid)
+        if pp is None:
+            raise HTTPException(404, f"エピソード {eid!r} のプロジェクトがありません")
+        tp = pp.with_suffix(".transcript.json")
+        if not tp.is_file():
+            raise HTTPException(404, f"{eid} の文字起こしがまだありません")
+        from .transcribe import Transcript
+        try:
+            proj = Project.load(pp)
+            lines = library.episode_transcript_lines(proj, Transcript.load(tp))
+        except (ValueError, KeyError, OSError) as e:
+            raise HTTPException(400, f"文字起こしを読めません：{e}")
+        return {"lines": lines, "duration": proj.edit.output_end if proj.edit.segments else None}
+
+    # ---- 要確認
+
+    def episode_dir(prog: str, eid: str) -> Path:
+        d = pdir(prog)
+        try:
+            library.check_name(eid, "エピソード")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if library.episode_project_path(d / eid) is None:
+            raise HTTPException(404, f"エピソード {eid!r} のプロジェクトがありません")
+        return d
+
+    @app.post("/api/programs/{prog}/episodes/{eid}/review")
+    def post_review(prog: str, eid: str):
+        d = episode_dir(prog, eid)
+        return library.review_episode(d, eid)
+
+    @app.put("/api/programs/{prog}/episodes/{eid}/review")
+    def put_review(prog: str, eid: str, data: dict = Body(...)):
+        d = episode_dir(prog, eid)
+        idx = data.get("resolved")
+        findings = library.load_review(d / eid)
+        if not isinstance(idx, list) or not all(isinstance(i, int) and not isinstance(i, bool)
+                                                and 0 <= i < len(findings) for i in idx):
+            raise HTTPException(400, "resolved は要確認の番号（0 から）の配列で指定してください")
+        for i in idx:
+            findings[i]["resolved"] = True
+        library.save_review(d / eid, findings)
+        return findings
 
     @app.middleware("http")
     async def no_stale_page(request, call_next):

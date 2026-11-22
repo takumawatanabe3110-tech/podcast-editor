@@ -6,6 +6,7 @@ import { compStaticGainDb, eqResponseDb, gateStaticGainDb, logFreqs } from './ds
 import { withFader } from './Mixer'
 import { BGM_ID, MASTER_ID, faderDb, type Player } from './player'
 import { usePlayhead } from './playhead'
+import { faint, ink, strong, useDark } from './theme'
 import { savePresetEffects } from './api'
 import { eqTemplates, type PresetCtx } from './presetctx'
 import type { Project } from './types'
@@ -110,7 +111,7 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
   const tracks: { id: TrackId; name: string; color: string }[] = [
     ...project.voices.map((v, i) => ({ id: v.source, name: v.name || v.source, color: colors[i % colors.length] })),
     { id: BGM_ID, name: 'BGM', color: '#B79CFF' },
-    { id: MASTER_ID, name: 'マスター', color: '#E8EAED' },
+    { id: MASTER_ID, name: 'マスター', color: '#8A88B0' },
   ]
   const track: TrackId = picked ?? tracks[0].id
   const comparing = usePlayhead(player, () => player.comparing)
@@ -149,11 +150,11 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
 
   return (
     <div className="fxdash">
-      <div className="fxbar">
+      <div className="fxbar glass">
         <div className="tabs fxtracks" role="group" aria-label="トラック" title="選んだトラックだけを鳴らす（マスターは全部）">
           {tracks.map(t => (
             <button key={t.id} aria-pressed={track === t.id} onClick={() => setTrack(t.id)}>
-              <span className="dot" style={{ background: t.color }} />{t.name}
+              <span className="dot badge" aria-hidden="true" style={{ background: t.color }}>{t.id === BGM_ID ? '♪' : t.id === MASTER_ID ? 'M' : (t.name.trim()[0] ?? '')}</span>{t.name}
             </button>
           ))}
         </div>
@@ -209,7 +210,7 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
       </div>
 
       <div className="fxgrid">
-        <section className="fxpanel area-eq">
+        <section className="fxpanel glass area-eq">
           <div className="fxhead">
             <h2>EQ</h2>
             <label className="onoff"><input type="checkbox" checked={!!eq && eq.enabled !== false} onChange={e => toggle('eq', e.target.checked)} />オン</label>
@@ -231,7 +232,7 @@ export function EffectsView({ project, player, colors, onChange, denoiseBusy, tr
             : <div className="hint">オンにすると、平らな EQ（5 バンド）から始めます</div>}
         </section>
 
-        <section className="fxpanel area-dyn">
+        <section className="fxpanel glass area-dyn">
           <div className="fxhead"><h2>ダイナミクス</h2><span className="hint">ゲート（小さい音を下げる）＋コンプ（大きい音を抑える）</span></div>
           <DynEditor gate={gateI >= 0 ? fx[gateI] : null} comp={compI >= 0 ? fx[compI] : null} gateI={gateI} compI={compI}
             player={player} track={track} onPut={put} onToggle={toggle} />
@@ -275,7 +276,7 @@ function FaderPanel({ id, player, color, db, gainDb, onChange }: {
     return () => cancelAnimationFrame(raf)
   }, [id, player])
   return (
-    <section className="fxpanel area-fader">
+    <section className="fxpanel glass area-fader">
       <div className="fxhead"><h2>フェーダー</h2></div>
       <div className="fadercol">
         <div className="meter big" aria-hidden="true"><div ref={bar} className="mbar" /><div ref={hold} className="mhold" /></div>
@@ -350,6 +351,7 @@ function EqEditor({ fx, fs, player, track, onChange }: { fx: Fx; fs: number; pla
   const curve = useRef<HTMLCanvasElement>(null)
   const spec = useRef<HTMLCanvasElement>(null)
   const [active, setActive] = useState<number | null>(null)
+  const dark = useDark()
   const setBand = (i: number, b: Band, g: string) => onChange({ ...fx, bands: bands.map((x, k) => (k === i ? b : x)) }, g)
 
   // カーブ（バンドごとの色の線と、合計の白い線）
@@ -361,11 +363,11 @@ function EqEditor({ fx, fs, player, track, onChange }: { fx: Fx; fs: number; pla
     const g = cv.getContext('2d')!
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h)
     // 目盛り
-    g.strokeStyle = '#2A2E36'; g.lineWidth = 1
+    g.strokeStyle = ink(0.07); g.lineWidth = 1
     for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000]) { const x = xOfF(f, w); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke() }
     for (const db of [-12, 12]) { const y = yOfDb(db, h); g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke() }
-    g.strokeStyle = '#4A4F5A'; g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke()
-    g.fillStyle = '#6B7280'; g.font = '10px sans-serif'
+    g.strokeStyle = ink(0.2); g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke()
+    g.fillStyle = faint(); g.font = '10px sans-serif'
     for (const f of [100, 1000, 10000]) g.fillText(fmtF(f), xOfF(f, w) + 3, h - 4)
     for (const db of [-12, 0, 12]) g.fillText(`${db > 0 ? '+' : ''}${db}`, 3, yOfDb(db, h) - 3)
     const freqs = logFreqs(Math.max(64, Math.floor(w / 2)), F_MIN, F_MAX)
@@ -376,8 +378,8 @@ function EqEditor({ fx, fs, player, track, onChange }: { fx: Fx; fs: number; pla
       g.stroke()
     }
     r.perBand.forEach((vals, i) => { if (bands[i]?.enabled !== false) line(vals, BAND_COLORS[i % BAND_COLORS.length] + (active === i ? '' : 'AA'), active === i ? 2 : 1.2) })
-    line(r.total, fx.enabled === false ? '#6B7280' : '#FFFFFF', 2.5)
-  }, [bands, fs, w, h, active, fx.enabled])
+    line(r.total, fx.enabled === false ? faint() : strong(), 2.5)
+  }, [bands, fs, w, h, active, fx.enabled, dark])
 
   // 処理前（灰色の面）と処理後（青い線）の音の成分。再生中だけ動く
   useEffect(() => {
@@ -403,8 +405,8 @@ function EqEditor({ fx, fs, player, track, onChange }: { fx: Fx; fs: number; pla
               const y = yOf(arr[i]); if (x) g.lineTo(x, y); else g.moveTo(x, y)
             }
           }
-          path(pre); g.lineTo(w, h); g.lineTo(0, h); g.closePath(); g.fillStyle = '#2C313A'; g.fill()
-          path(post); g.strokeStyle = 'rgba(106,167,255,0.8)'; g.lineWidth = 1.5; g.stroke()
+          path(pre); g.lineTo(w, h); g.lineTo(0, h); g.closePath(); g.fillStyle = ink(0.09); g.fill()
+          path(post); g.strokeStyle = 'rgba(110,139,239,0.9)'; g.lineWidth = 1.5; g.stroke()
         }
       }
       raf = requestAnimationFrame(draw)
@@ -493,6 +495,7 @@ function DynEditor({ gate, comp, gateI, compI, player, track, onPut, onToggle }:
   gate: Fx | null; comp: Fx | null; gateI: number; compI: number; player: Player; track: TrackId
   onPut: (e: Fx, g: string) => void; onToggle: (type: string, on: boolean) => void
 }) {
+  const dark = useDark()
   const [box, { w, h }] = useSize<HTMLDivElement>()
   const graph = useRef<HTMLCanvasElement>(null)
   const hist = useRef<HTMLCanvasElement>(null)
@@ -520,23 +523,23 @@ function DynEditor({ gate, comp, gateI, compI, player, track, onPut, onToggle }:
     cv.width = w * dpr; cv.height = h * dpr
     const g = cv.getContext('2d')!
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h)
-    g.strokeStyle = '#2A2E36'; g.lineWidth = 1
+    g.strokeStyle = ink(0.07); g.lineWidth = 1
     for (let d = -50; d < 0; d += 10) { const x = px(d, w), y = h - px(d, h); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.moveTo(0, y); g.lineTo(w, y); g.stroke() }
-    g.strokeStyle = '#3A404B'; g.beginPath(); g.moveTo(0, h); g.lineTo(w, 0); g.stroke()
+    g.strokeStyle = ink(0.18); g.beginPath(); g.moveTo(0, h); g.lineTo(w, 0); g.stroke()
     // しきい値の縦線
     g.setLineDash([4, 4])
     if (gOn) { g.strokeStyle = GATE_COLOR + '88'; g.beginPath(); g.moveTo(px(gThr, w), 0); g.lineTo(px(gThr, w), h); g.stroke() }
     if (cOn) { g.strokeStyle = COMP_COLOR + '88'; g.beginPath(); g.moveTo(px(cThr, w), 0); g.lineTo(px(cThr, w), h); g.stroke() }
     g.setLineDash([])
-    g.strokeStyle = gOn || cOn ? '#FFFFFF' : '#6B7280'; g.lineWidth = 3; g.beginPath()
+    g.strokeStyle = gOn || cOn ? strong() : faint(); g.lineWidth = 3; g.beginPath()
     for (let x = 0; x <= w; x += 2) {
       const y = h - px(Math.max(L_MIN - 20, outOf(dbAt(x, w))), h)
       if (x) g.lineTo(x, y); else g.moveTo(x, y)
     }
     g.stroke()
-    g.fillStyle = '#6B7280'; g.font = '10px sans-serif'
+    g.fillStyle = faint(); g.font = '10px sans-serif'
     g.fillText('入る音（dB）→', w - 84, h - 4); g.fillText('出る音', 4, 12)
-  }, [w, h, gOn, cOn, gThr, gRange, cThr, ratio, knee, makeup]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [w, h, gOn, cOn, gThr, gRange, cThr, ratio, knee, makeup, dark]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 再生中：今の位置・下げた量（ゲートとコンプの合計）・直近 6 秒の音量の動き
   useEffect(() => {
@@ -570,7 +573,7 @@ function DynEditor({ gate, comp, gateI, compI, player, track, onPut, onToggle }:
           const g = cv.getContext('2d')!
           g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H)
           const xi = (k: number) => (k / (N - 1)) * W, yl = (db: number) => H - ((db - L_MIN) / -L_MIN) * H
-          g.fillStyle = '#7A4E24'; g.beginPath(); g.moveTo(0, 0)
+          g.fillStyle = 'rgba(232,150,74,0.45)'; g.beginPath(); g.moveTo(0, 0)
           for (let k = 0; k < N; k++) g.lineTo(xi(k), Math.min(H, (-grs[(head + k) % N] / 30) * H))
           g.lineTo(W, 0); g.closePath(); g.fill()
           g.setLineDash([6, 4]); g.lineWidth = 1
@@ -582,7 +585,7 @@ function DynEditor({ gate, comp, gateI, compI, player, track, onPut, onToggle }:
             for (let k = 0; k < N; k++) { const y = yl(arr[(head + k) % N]); if (k) g.lineTo(xi(k), y); else g.moveTo(xi(k), y) }
             g.stroke()
           }
-          line(ins, '#8B939E', 1.2); line(outs, '#5FD39A', 1.8)
+          line(ins, faint(), 1.2); line(outs, '#5FD39A', 1.8)
         }
       }
       raf = requestAnimationFrame(loop)
@@ -651,7 +654,7 @@ function DynEditor({ gate, comp, gateI, compI, player, track, onPut, onToggle }:
       </div>
       <div className="dynhist">
         <canvas ref={hist} />
-        <div className="hint dynlegend"><span style={{ color: '#8B939E' }}>― 入る音</span><span style={{ color: '#5FD39A' }}>― 出る音</span><span style={{ color: '#C08A50' }}>■ 下げた量</span><span>直近 6 秒</span></div>
+        <div className="hint dynlegend"><span style={{ color: 'var(--sub)' }}>― 入る音</span><span style={{ color: '#5FD39A' }}>― 出る音</span><span style={{ color: '#C08A50' }}>■ 下げた量</span><span>直近 6 秒</span></div>
       </div>
     </div>
   )

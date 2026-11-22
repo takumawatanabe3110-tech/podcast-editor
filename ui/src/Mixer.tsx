@@ -21,10 +21,6 @@ export function withFader(effects: unknown[], db: number): unknown[] {
   return list
 }
 
-function chips(effects: unknown[]): string[] {
-  const names: Record<string, string> = { eq: 'EQ', compressor: 'コンプ', limiter: 'リミッター' }
-  return [...new Set((effects as { type?: string }[]).map(e => names[e?.type ?? '']).filter(Boolean))]
-}
 
 const fmtDb = (db: number) => `${db > 0 ? '+' : db < 0 ? '−' : ''}${Math.abs(db).toFixed(1)}`
 
@@ -40,9 +36,9 @@ export function Mixer({ project, player, colors, solo, setSolo, onChange, export
   const out = project.output as { loudness_lufs?: number | null; true_peak_dbtp?: number; mp3_kbps?: number; channels?: number }
   return (
     <section className="mixer" aria-label="ミキサー">
+      <div className="mixstrips">
       {project.voices.map((v, i) => (
         <Strip key={v.source} id={v.source} player={player} name={v.name || v.source} color={colors[i % colors.length]}
-          chips={[...(v.denoise ? ['ノイズ除去'] : []), ...chips(v.effects)]}
           fader={faderDb(v.effects)}
           detail={`声の音量 ${fmtDb(v.gain_db)} dB（自動）`}
           mute={v.mute} soloOn={solo.has(v.source)}
@@ -50,15 +46,15 @@ export function Mixer({ project, player, colors, solo, setSolo, onChange, export
           onSolo={() => toggleSolo(v.source)}
           onFader={db => onChange({ ...project, voices: project.voices.map(x => x === v ? { ...x, effects: withFader(x.effects, db) } : x) }, `fader-${v.source}`)} />
       ))}
-      <Strip id={BGM_ID} player={player} name="BGM" color="#B79CFF" chips={chips(project.bgm_effects)}
+      <Strip id={BGM_ID} player={player} name="BGM" color="#B79CFF"
         fader={faderDb(project.bgm_effects)} detail={project.bgm.map(c => c.source).join('・') || 'なし'}
         soloOn={solo.has(BGM_ID)} onSolo={() => toggleSolo(BGM_ID)}
         onFader={db => onChange({ ...project, bgm_effects: withFader(project.bgm_effects, db) }, 'fader-bgm')} />
-      <Strip id={MASTER_ID} player={player} name="マスター" color="#E8EAED"
-        chips={[...chips(project.master_effects), ...(out.loudness_lufs != null ? ['ラウドネス'] : [])]}
+      <Strip id={MASTER_ID} player={player} name="マスター" color="#8A88B0"
         fader={faderDb(project.master_effects)} detail="全体（Bus 1）"
         onFader={db => onChange({ ...project, master_effects: withFader(project.master_effects, db) }, 'fader-master')} />
-      <div className="mixcard export">
+      </div>
+      <div className="mixcard glass export">
         <b title={`MP3 ${out.mp3_kbps ?? 128} kbps ${out.channels === 1 ? 'モノラル' : 'ステレオ'}`}>書き出しの設定</b>
         <label className="row">ラウドネス
           <input type="number" step={0.5} value={out.loudness_lufs ?? ''} aria-label="ラウドネスの目標（LUFS）"
@@ -96,25 +92,24 @@ function ExportResult({ s }: { s: ExportStatus }) {
 const MIN_DB = -30, MAX_DB = 12
 
 interface StripProps {
-  id: string; player: Player; name: string; color: string; chips: string[]; fader: number; detail: string
+  id: string; player: Player; name: string; color: string; fader: number; detail: string
   mute?: boolean; soloOn?: boolean; onMute?: () => void; onSolo?: () => void; onFader: (db: number) => void
 }
 
-function Strip({ id, player, name, color, chips, fader, detail, mute, soloOn, onMute, onSolo, onFader }: StripProps) {
+function Strip({ id, player, name, color, fader, detail, mute, soloOn, onMute, onSolo, onFader }: StripProps) {
   return (
-    <div className="mixcard strip" title={detail}>
+    <div className="mixcard glass strip" title={detail}>
       <b className="sname"><span className="dot" style={{ background: color }} />{name}</b>
-      <div className="schips">{chips.map(c => <span key={c}>{c}</span>)}</div>
+      <div className="sval">
+        <input type="number" step={0.1} min={MIN_DB} max={MAX_DB} value={fader} aria-label={`${name}のフェーダーの値`}
+          onChange={e => e.target.value !== '' && onFader(Math.max(MIN_DB, Math.min(MAX_DB, +e.target.value)))} />
+        <span className="hint">dB</span>
+      </div>
       <div className="sbody">
         <Meter id={id} player={player} />
         <input className="fader" type="range" min={MIN_DB} max={MAX_DB} step={0.1} value={fader}
           aria-label={`${name}のフェーダー（dB）`} title="ダブルクリックで 0 dB に戻す"
           onChange={e => onFader(+e.target.value)} onDoubleClick={() => onFader(0)} />
-        <div className="sval">
-          <input type="number" step={0.1} min={MIN_DB} max={MAX_DB} value={fader} aria-label={`${name}のフェーダーの値`}
-            onChange={e => e.target.value !== '' && onFader(Math.max(MIN_DB, Math.min(MAX_DB, +e.target.value)))} />
-          <span className="hint">dB</span>
-        </div>
       </div>
       {(onMute || onSolo) && (
         <div className="ms">

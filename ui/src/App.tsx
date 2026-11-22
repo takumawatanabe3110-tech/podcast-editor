@@ -6,7 +6,7 @@ import { EffectsView } from './EffectsView'
 import { Mixer, type ExportStatus } from './Mixer'
 import { MASTER_ID, Player } from './player'
 import type { PresetCtx } from './presetctx'
-import { enrollVoiceprint, type Current } from './library'
+import { type Current } from './library'
 import { usePlayhead } from './playhead'
 import { ScriptPanel } from './ScriptPanel'
 import { clamp, Splitter, useLayout } from './layout'
@@ -25,8 +25,18 @@ function structuralChange(a: Project, b: Project) {
   return a.edit !== b.edit || a.bgm !== b.bgm || a.voices.some((v, i) => v.keyframes !== b.voices[i]?.keyframes)
 }
 
-export default function App({ current, onShowList }: { current?: Current; onShowList?: () => void } = {}) {
-  const player = useMemo(() => new Player(), [])
+export default function App({ current, onShowList, player: given, active = true, onReady }: {
+  current?: Current; onShowList?: () => void
+  /** 音を鳴らす Player（一覧画面と共有して、画面を切り替えても止めないため）。なければ自分で作る */
+  player?: Player
+  /** false のあいだは一覧画面の裏に隠れている（キー操作を受けない） */
+  active?: boolean
+  /** 音を読み込み終えたとき */
+  onReady?: () => void
+} = {}) {
+  const player = useMemo(() => given ?? new Player(), [given])
+  const onReadyRef = useRef(onReady)
+  onReadyRef.current = onReady
   const [name, setName] = useState('')
   const [project, setProject] = useState<Project | null>(null)
   const [transcript, setTranscript] = useState<Transcript | null>(null)
@@ -45,6 +55,7 @@ export default function App({ current, onShowList }: { current?: Current; onShow
   const [layout, setLayout] = useLayout()
   const [help, setHelp] = useState(false)
   const dragBase = useRef(0) // 境目のドラッグを始めたときの広さ
+  const mixRef = useRef<HTMLDivElement>(null)
   const history = useRef<{ past: Project[]; future: Project[]; group: string | null; at: number }>({ past: [], future: [], group: null, at: 0 })
   const [, bump] = useState(0)
   const projectRef = useRef<Project | null>(null)
@@ -70,7 +81,7 @@ export default function App({ current, onShowList }: { current?: Current; onShow
         setPeaks(Object.fromEntries(sids.map((s, i) => [s, pk[i]])))
         setLoading(`音声を読み込み中… 0/${sids.length}`)
         await player.load(sids, (d, n) => alive && setLoading(`音声を読み込み中… ${d}/${n}`))
-        if (alive) { setLoading(''); player.seek(0) } // 0 秒から（OP の BGM の頭から聴けるように）
+        if (alive) { setLoading(''); if (!player.playing) player.seek(0); onReadyRef.current?.() } // 0 秒から（OP の BGM の頭から聴けるように）
         const ex = await api.getExport()
         if (alive) setExportStatus(ex)
       } catch (e) {
@@ -210,19 +221,6 @@ export default function App({ current, onShowList }: { current?: Current; onShow
     }
   }, [update, transcript])
 
-  /** BGM の置き方（全部のクリップ）をいつもの設定に保存 */
-  const saveBgmToPreset = useCallback(async () => {
-    const p = projectRef.current, name = presetCtx.current
-    if (!p || !name) return
-    if (!window.confirm(`今の BGM（${p.bgm.map(c => c.source).join('・')}）の置き方を、いつもの設定「${name}」に保存します。\npresets/${name}.json を書き換え、次の回から使われます。よろしいですか？`)) return
-    try {
-      await presetCtx.flush()
-      for (const c of p.bgm) await api.savePresetBgm(name, c.source)
-      await presetCtx.reload()
-      window.alert('保存しました')
-    } catch (e) { setSave({ error: String((e as Error).message ?? e) }) }
-  }, [presetCtx])
-
   const startExport = useCallback(async () => {
     const p = projectRef.current
     if (!p) return
@@ -255,6 +253,7 @@ export default function App({ current, onShowList }: { current?: Current; onShow
   // ---- キーボード
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!active) return // 一覧画面を見ているあいだ
       // Ctrl+S：台本の欄を開け閉め（文字を直している最中でも効く）
       if (e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 's') { e.preventDefault(); setLayout({ scriptOpen: !layout.scriptOpen }); return }
       const el = e.target as HTMLElement
@@ -274,7 +273,7 @@ export default function App({ current, onShowList }: { current?: Current; onShow
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [player, undo, redo, cutSelected, selected.length, screen, layout.scriptOpen, setLayout])
+  }, [active, player, undo, redo, cutSelected, selected.length, screen, layout.scriptOpen, setLayout])
 
   if (fatal) return <div className="center"><div><b>読み込めませんでした</b><div className="error">{fatal}</div></div></div>
   if (!project) return <div className="center">{loading}</div>
@@ -289,20 +288,24 @@ export default function App({ current, onShowList }: { current?: Current; onShow
   ].filter(Boolean).join('\n')
   return (
     <div className="app">
+      <div className="frame appframe">
       <header className="header">
         {onShowList && current?.program && (
           <button className="btn icon" aria-label="一覧へ" title="一覧へ（番組・回）" onClick={onShowList}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
         )}
-        <div className="title" title={info}><b>{project.name || name}</b></div>
+        <div className="title" title={info}><b>{project.name || name}</b>
+          <span>{project.voices.map(v => v.name || v.source).join('・')}{save === 'saved' ? ' ・ 保存済み' : save === 'saving' ? ' ・ 保存中…' : ''}</span></div>
         <div className="tabs" role="group" aria-label="画面の切り替え">
           <button aria-pressed={screen === 'edit'} onClick={() => setScreen('edit')}>編集</button>
           <button aria-pressed={screen === 'fx'} onClick={() => setScreen('fx')}>エフェクト</button>
         </div>
         {loading && <span className="status busy">{loading}</span>}
         {!transcript && !loading && <span className="status warn">文字起こしなし</span>}
-        <div className="spacer" />
+        <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef}>
+          {screen === 'edit' ? <Overview project={project} player={player} view={view} total={total} /> : <Overview project={project} player={player} total={total} />}
+        </Transport>
         {typeof save === 'object'
           ? <span className="status warn" title={save.error}>保存できませんでした</span>
           : <span className={`savedot ${save}`} role="status" aria-label={save === 'saved' ? '保存済み' : '保存中'} title={save === 'saved' ? '保存済み' : '保存中…'} />}
@@ -328,7 +331,7 @@ export default function App({ current, onShowList }: { current?: Current; onShow
         </button>
       </header>
       {screen === 'edit' ? (
-        <div className="body" style={{ gridTemplateColumns: layout.scriptOpen ? `${layout.scriptW}px 6px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+        <div className="body" style={{ gridTemplateColumns: layout.scriptOpen ? `${layout.scriptW}px 14px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
           {layout.scriptOpen && <>
             <ScriptPanel project={project} player={player} lines={lines} colors={speakerColor}
               selected={selected} setSelected={setSelected} onSeekRef={seekRef} onEditText={editText} onRestore={restore} />
@@ -336,31 +339,18 @@ export default function App({ current, onShowList }: { current?: Current; onShow
               onDrag={d => setLayout({ scriptW: clamp(dragBase.current + d, 240, Math.max(260, window.innerWidth - 420)) })} />
           </>}
           <main className="main editmain">
-            <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef}
-              showRuby={showRuby} setShowRuby={setShowRuby} />
-            <Overview project={project} player={player} view={view} total={total} />
-            <div className="trackwrap">
+            <div className="trackwrap glass">
               <EditTimeline project={project} utterances={transcript?.utterances ?? []} peaks={peaks} player={player} view={view} setView={setView}
-                total={total} showRuby={showRuby} colors={COLORS} onChange={update}
+                total={total} showRuby={showRuby} setShowRuby={setShowRuby} colors={COLORS} onChange={update}
                 refDur={sid => (player.duration(sid) ?? refTotal) - (project.sync.tracks[sid]?.offset_sec ?? 0)}
                 onOpenFx={t => { setFxTrack(t); setScreen('fx') }}
-                onRename={renameVoice}
-                onSaveBgm={presetCtx.current ? saveBgmToPreset : undefined}
-                onEnroll={current?.program ? async (sid, nm) => {
-                  if (!window.confirm(`このトラックの声を「${nm}」の声紋として番組に登録します。次の回から、この声に近いトラックに「${nm}」と付きます。よろしいですか？`)) return
-                  try { await enrollVoiceprint(current.program, nm, current.episode, sid); window.alert(`「${nm}」の声紋を登録しました`) }
-                  catch (e) { window.alert(`登録できませんでした：${(e as Error).message}`) }
-                } : undefined} />
+                onRename={renameVoice} />
             </div>
-            <Splitter dir="row" label="ミキサーの高さ" onStart={() => { dragBase.current = layout.mixerH }}
-              onDrag={d => setLayout({ mixerOpen: true, mixerH: clamp(dragBase.current - d, 120, Math.max(140, window.innerHeight - 260)) })}
-              onDoubleClick={() => setLayout({ mixerOpen: !layout.mixerOpen })}>
-              <button className="mixtoggle" aria-expanded={layout.mixerOpen} onClick={() => setLayout({ mixerOpen: !layout.mixerOpen })}>
-                ミキサー {layout.mixerOpen ? '▾' : '▸'}
-              </button>
-            </Splitter>
+            <Splitter dir="row" label="ミキサーの高さ" onStart={() => { dragBase.current = mixRef.current?.getBoundingClientRect().height ?? layout.mixerH }}
+              onDrag={d => setLayout({ mixerOpen: true, mixerAuto: false, mixerH: clamp(dragBase.current - d, 140, Math.max(160, window.innerHeight - 260)) })}
+              onDoubleClick={() => setLayout({ mixerOpen: true, mixerAuto: true })} />
             {layout.mixerOpen && (
-              <div className="mixwrap" style={{ height: layout.mixerH }}>
+              <div ref={mixRef} className={`mixwrap${layout.mixerAuto ? ' auto' : ''}`} style={layout.mixerAuto ? undefined : { height: layout.mixerH }}>
                 <Mixer project={project} player={player} colors={COLORS} solo={solo} setSolo={setSolo}
                   onChange={(p, g) => update(p, g)} exportStatus={exportStatus} />
               </div>
@@ -370,12 +360,11 @@ export default function App({ current, onShowList }: { current?: Current; onShow
       ) : screen === 'fx' ? (
         <div className="body bgmbody">
           <main className="main" style={{ overflow: 'hidden' }}>
-            <Transport player={player} project={project} lines={lines} total={total} disabled={!!loading} onSeekRef={seekRef} />
-            <Overview project={project} player={player} total={total} />
             <EffectsView project={project} player={player} colors={COLORS} onChange={update} denoiseBusy={denoiseBusy} track={fxTrack} setTrack={setFxTrack} preset={presetCtx} />
           </main>
         </div>
       ) : null}
+      </div>
     </div>
   )
 }
@@ -409,7 +398,7 @@ const HELP: Record<'common' | Screen, [string, string][]> = {
     ['BGM をドラッグ', '位置を動かす（端で頭・終わりを削る・戻す、□ でフェード）'],
     ['トラック名をクリック', 'エフェクトを開く（名前の欄は書き換えられる）'],
     ['フェーダーをダブルクリック', '0 dB に戻す'],
-    ['境目をダブルクリック', 'ミキサーを開く／閉じる'],
+    ['ミキサーの上の境目をダブルクリック', 'ミキサーの高さを波形に合わせて戻す'],
   ],
   fx: [
     ['トラックを選ぶ', 'そのトラックだけ鳴らす（マスターは全部）'],
@@ -438,9 +427,9 @@ function Help({ screen, onClose }: { screen: Screen; onClose: () => void }) {
   )
 }
 
-function Transport({ player, project, lines, total, disabled, onSeekRef, showRuby, setShowRuby }: {
+function Transport({ player, project, lines, total, disabled, onSeekRef, children }: {
   player: Player; project: Project; lines: { start: number }[]; total: number; disabled: boolean; onSeekRef: (t: number) => void
-  showRuby?: boolean; setShowRuby?: (b: boolean) => void
+  children?: React.ReactNode // 再生バー（時刻の横に伸ばして置く）
 }) {
   const clock = usePlayhead(player, t => formatTime(t))
   const playing = usePlayhead(player, (_t, p) => p)
@@ -463,8 +452,7 @@ function Transport({ player, project, lines, total, disabled, onSeekRef, showRub
       </button>
       <button className="btn icon" aria-label="次の発言へ" title="次の発言へ" onClick={() => jump(1)}>⏭</button>
       <div className="clock mono">{clock} <span>/ {formatTime(total)}</span></div>
-      <div className="spacer" />
-      {setShowRuby && <label title="波形の上に文字（フィラーは灰色）を出す"><input type="checkbox" checked={showRuby} onChange={e => setShowRuby(e.target.checked)} />ルビ</label>}
+      {children ? <div className="tbar">{children}</div> : <div className="spacer" />}
     </div>
   )
 }

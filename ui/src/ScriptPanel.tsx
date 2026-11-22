@@ -84,13 +84,13 @@ export function ScriptPanel(p: Props) {
 
   const q = query.trim()
   return (
-    <aside className="aside">
+    <aside className="aside glass">
       <div className="aside-head">
         <input className="search" type="search" placeholder="台本を検索" aria-label="台本を検索" value={query} onChange={e => setQuery(e.target.value)} />
       </div>
       <div className="lines" ref={listRef}>
         {p.lines.map((u, i) => (q && !u.script.includes(q)) ? null : (
-          <Line key={i} i={i} u={u} color={p.colors[u.source] ?? '#888'} cut={isCut(segs, u.start, u.end)}
+          <Line key={i} i={i} u={u} color={p.colors[u.source] ?? '#8A88B0'} cut={isCut(segs, u.start, u.end)}
             now={i === now} playing={playing} sel={p.selected.includes(i)} editing={editing === i}
             onDown={onDown} onEnter={onEnter} onUp={onUp} onTime={onTime}
             onDone={text => {
@@ -118,7 +118,7 @@ const Line = memo(function Line({ i, u, color, cut, now, playing, sel, editing, 
       <button className="time mono" aria-label={`${formatTime(lineTime(u))} の文を選ぶ`} aria-pressed={sel} title="クリックで選ぶ（Delete でカット）"
         onMouseDown={e => { e.stopPropagation(); if (e.shiftKey) e.preventDefault() }} onMouseUp={e => e.stopPropagation()} onClick={e => onTime(e, i)}>{formatTime(lineTime(u))}</button>
       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <div className="who"><span className="dot" style={{ background: color }} />{u.speaker}
+        <div className="who"><span className="dot badge" aria-hidden="true" style={{ background: color }}>{u.speaker.trim()[0] ?? ''}</span>{u.speaker}
           {cut && <span className="tag cut" title="クリックで戻す">カット済み</span>}</div>
         {editing ? <Editor initial={u.script} onDone={onDone} /> : <div className="text">{u.script}</div>}
       </div>

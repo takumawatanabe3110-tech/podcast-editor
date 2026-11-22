@@ -184,6 +184,28 @@ def episode_project_path(episode_dir) -> Optional[Path]:
     return others[0] if others else None
 
 
+def episode_transcript_lines(proj: Project, tr) -> List[dict]:
+    """文字起こしを、書き出した音声の時刻（出力時刻）の発言リストにする。
+
+    カットされた区間に丸ごと入る発言は捨て、一部だけ入るものは区間の内側に切り詰める。
+    話者名はプロジェクトの声の名前（なければ文字起こしの話者名）。
+    """
+    names = {v.source: v.name for v in proj.voices if v.name}
+    out: List[dict] = []
+    for u in tr.utterances:
+        pieces = []
+        for out_start, seg in proj.edit.layout():
+            a, b = max(u.start, seg.start), min(u.end, seg.end)
+            if b > a:
+                pieces.append((out_start + (a - seg.start), out_start + (b - seg.start)))
+        if not pieces or not u.text.strip():
+            continue
+        out.append({"speaker": names.get(u.source) or u.speaker, "text": u.text,
+                    "start": min(p[0] for p in pieces), "end": max(p[1] for p in pieces)})
+    out.sort(key=lambda x: x["start"])
+    return out
+
+
 def _date_text(eid: str) -> str:
     return f"{eid[:4]}-{eid[4:6]}-{eid[6:]}"
 
@@ -203,6 +225,7 @@ def list_episodes(program_dir) -> List[dict]:
                 title, duration = p.name, p.edit.output_end
             except Exception:  # 壊れていても一覧は出す
                 pass
+        review = load_review(d)
         exp = None
         for ext in (".mp3", ".wav"):
             f = d / f"{d.name}{ext}"
@@ -215,6 +238,7 @@ def list_episodes(program_dir) -> List[dict]:
             "has_project": proj is not None,
             "has_transcript": proj is not None and proj.with_suffix(".transcript.json").is_file(),
             "exported": exp, "duration": duration,
+            "review": review, "review_open": sum(1 for f in review if not f.get("resolved")),
         })
     return out
 
@@ -399,7 +423,7 @@ def create_episode(
 
     prints（{名前: 声紋}）があれば、各トラックの声を調べて名前を付け、プリセットの声の設定を名前で当てる。
     bgm_paths（{素材ID: ファイル}）はプリセットの BGM の path を差し替える（op / ed など）。
-    返すもの：{"project", "notes", "assigned"（{素材ID: 名前} または None）}
+    返すもの：{"project", "notes", "assigned"（{素材ID: 名前} または None）, "sync"（SyncResult）, "embs"（{素材ID: 声紋} または None）}
     """
     from . import denoise, voiceprint
     from .presets import apply_preset, find_preset, load_preset
@@ -422,6 +446,7 @@ def create_episode(
             denoise.denoised_path(p.source_path(v.source, base), v.denoise, cache)
 
     assigned = None
+    embs = None
     if prints:
         embs = {}
         for i, v in enumerate(p.voices):
@@ -454,7 +479,7 @@ def create_episode(
     out.parent.mkdir(parents=True, exist_ok=True)
     p.save(out)
     prog(0.6, "プロジェクトを保存しました")
-    return {"project": p, "notes": notes, "assigned": assigned}
+    return {"project": p, "notes": notes, "assigned": assigned, "sync": r, "embs": embs}
 
 
 def transcribe_and_save(proj_path, trim_end: Optional[float] = None,
@@ -484,6 +509,192 @@ def transcribe_and_save(proj_path, trim_end: Optional[float] = None,
             log(f"話の終わり（基準時刻 {end:.2f} 秒）の {pad} 秒後で切りました"
                 f"（声の終わり {before:.1f} → {p.edit.output_end:.1f} 秒。ED の BGM もついてきます）")
     return {"utterances": len(tr.utterances), "trimmed": trimmed}
+
+
+# ---------------------------------------------------------------- 要確認（review.json）
+
+REVIEW_FILE = "review.json"
+DRIFT_NOTICE_PPM = 50  # これを超えるドリフトは「ありうるが珍しい」ので知らせる
+WEAK_MARGIN = 0.03  # しきい値 + これ 未満の一致は「ぎりぎり」
+SIGNOFFS = ("ありがとうございました", "さよなら", "よろしくお願いします")
+TAIL_NEXT_SEC = 5.0  # 挨拶の後これ以内に次の発言が始まれば「続いている」（12/4 は約4秒あいて収録後の雑談が続いた）
+IMBALANCE_RATIO = 0.10
+_PUNCT = " 　、。，．,.!！?？ー〜~…\n"
+_FILLER_WORDS = ("はい", "どうも", "ありがとう", "ばいばい", "お疲れさまでした", "お疲れ様でした")
+
+
+def _finding(kind: str, message: str, time: Optional[float] = None) -> dict:
+    return {"kind": kind, "message": message, "time": None if time is None else round(float(time), 2)}
+
+
+def _mmss(t: float) -> str:
+    m, s = divmod(float(t), 60)
+    return f"{int(m)}:{s:04.1f}"
+
+
+def load_review(episode_dir) -> List[dict]:
+    f = Path(episode_dir) / REVIEW_FILE
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return d if isinstance(d, list) else []
+
+
+def save_review(episode_dir, findings: List[dict]) -> None:
+    f = Path(episode_dir) / REVIEW_FILE
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps(findings, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    tmp.replace(f)
+
+
+def sync_findings(sync) -> List[dict]:
+    """同期の結果から：拍手なし・同期の注意・大きめのドリフト。"""
+    out = []
+    if sync.clap_time_ref_sec is None:
+        out.append(_finding("no_clap", "拍手が見つからず、エピソードの頭を拍手で切れていません。冒頭を確認してください"))
+    for t in sync.tracks:
+        name = Path(t.file).name
+        for w in getattr(t, "warnings", []):
+            out.append(_finding("sync_warning", f"{name}：{w}"))
+        if not t.is_reference and abs(t.drift_ppm) > DRIFT_NOTICE_PPM:
+            out.append(_finding("drift", f"{name}：時計のずれ（ドリフト）が {t.drift_ppm:+.0f} ppm と大きめです。終盤の口の動きと音がずれていないか確認してください"))
+    return out
+
+
+def voiceprint_findings(p: Project, embs: Dict[str, "np.ndarray"], prints: Dict[str, "np.ndarray"]) -> List[dict]:  # noqa: F821
+    """声紋との照合から：ゲスト（どのメンバーにも合わない）・ぎりぎりの一致。"""
+    from . import voiceprint
+
+    out = []
+    if not prints:
+        return out
+    for v in p.voices:
+        emb = embs.get(v.source)
+        if emb is None:
+            continue
+        label = f"{v.name}（{Path(p.sources[v.source].path).name}）"
+        name = v.name or ""
+        if name in prints:
+            s = voiceprint.similarity(emb, prints[name])
+            if s < voiceprint.THRESHOLD + WEAK_MARGIN:
+                out.append(_finding("weak_match", f"{label} は {name} と判定しましたが点数が低めです（{s:.2f}）。別の人でないか確認してください"))
+        elif name.startswith("ゲスト"):
+            near, best = None, -1.0
+            for m, e in prints.items():
+                s = voiceprint.similarity(emb, e)
+                if s > best:
+                    near, best = m, s
+            out.append(_finding("guest", f"{label} はメンバーの声紋に合いませんでした（{near}に近い（{best:.2f}）がしきい値 {voiceprint.THRESHOLD:.2f} 未満）。ゲストでよいか確認してください"))
+    return out
+
+
+def _strip_marks(text: str) -> str:
+    return text.strip(_PUNCT)
+
+
+def _meaningful(text: str) -> bool:
+    """挨拶やあいづちを除いて、まだ言葉が残るか。"""
+    for w in SIGNOFFS + _FILLER_WORDS:
+        text = text.replace(w, "")
+    return bool(_strip_marks(text))
+
+
+def tail_chatter_finding(tr) -> Optional[dict]:
+    """最後の2発言に締めの挨拶があり、その後も話が続いているように見えたら知らせる。"""
+    us = [u for u in tr.utterances if u.script.strip()]
+    for i in range(max(0, len(us) - 2), len(us)):
+        u = us[i]
+        text = "".join(w.w for w in u.words) if u.words else u.text
+        text = text.replace(" ", "").replace("　", "")
+        pos, phrase = -1, None
+        for ph in SIGNOFFS:
+            k = text.rfind(ph)
+            if k >= 0 and k + len(ph) > pos:
+                pos, phrase = k + len(ph), ph
+        if phrase is None:
+            continue
+        rest = _strip_marks(text[pos:])
+        if rest:
+            t, acc = u.end, 0
+            for w in u.words:
+                acc += len(w.w.replace(" ", ""))
+                if acc >= pos:
+                    t = w.t1
+                    break
+            return _finding("tail_chatter", f"{_mmss(t)} 付近：「{phrase}」のあとにも話が続いているようです（「{rest[:20]}」）。ここまでで終わりなら、その位置で切ってください", t)
+        for nxt in us[i + 1:]:
+            if nxt.start - u.end <= TAIL_NEXT_SEC and _meaningful(nxt.script):
+                return _finding("tail_chatter", f"{_mmss(u.end)} 付近：「{phrase}」の直後に別の発言が続いています（「{_strip_marks(nxt.script)[:20]}」）。ここまでで終わりなら、その位置で切ってください", u.end)
+    return None
+
+
+def imbalance_findings(tr, p: Project) -> List[dict]:
+    """トラックごとの発言の長さ。ほかの人の 10% 未満なら、違うファイルや空の可能性。"""
+    if len(p.voices) < 2:
+        return []
+    dur = {v.source: 0.0 for v in p.voices}
+    for u in tr.utterances:
+        if u.source in dur:
+            dur[u.source] += max(0.0, u.end - u.start)
+    out = []
+    for v in p.voices:
+        others = [d for s, d in dur.items() if s != v.source]
+        top = max(others)
+        if top > 0 and dur[v.source] < IMBALANCE_RATIO * top:
+            out.append(_finding("speaker_imbalance", f"{v.name or v.source}の発言が {dur[v.source]:.0f} 秒しかありません（ほかは最大 {top:.0f} 秒）。違うファイルや空のファイルでないか確認してください"))
+    return out
+
+
+def transcript_findings(tr, p: Project) -> List[dict]:
+    out = []
+    f = tail_chatter_finding(tr)
+    if f:
+        out.append(f)
+    return out + imbalance_findings(tr, p)
+
+
+def _carry_resolved(new: List[dict], old: List[dict]) -> List[dict]:
+    """同じ種類・同じ文の指摘は、前の「解決済み」を引き継ぐ。"""
+    done = {(f.get("kind"), f.get("message")) for f in old if f.get("resolved")}
+    for f in new:
+        if (f["kind"], f["message"]) in done:
+            f["resolved"] = True
+    return new
+
+
+def review_episode(program_dir, episode_id: str) -> List[dict]:
+    """既存のエピソードの「要確認」を作り直して review.json に保存する。
+    文字起こし（末尾の雑談・発言の偏り）・声紋（ゲスト・ぎりぎり）・ドリフトはいまの内容から計算し直す。
+    拍手・同期の注意は同期をやり直さないと分からないので、前の review.json のものを残す。"""
+    from . import voiceprint
+    from .transcribe import Transcript
+
+    base = Path(program_dir)
+    ep_dir = base / check_name(episode_id, "エピソード")
+    proj_path = episode_project_path(ep_dir)
+    if proj_path is None:
+        raise FileNotFoundError(f"エピソード {episode_id} のプロジェクトがありません")
+    p = Project.load(proj_path)
+    old = load_review(ep_dir)
+    keep = {"no_clap", "sync_warning"}
+    out = [f for f in old if f.get("kind") in keep]
+    for sid, t in p.sync.tracks.items():
+        if abs(t.drift_ppm) > DRIFT_NOTICE_PPM:
+            out.append(_finding("drift", f"{Path(p.sources[sid].path).name}：時計のずれ（ドリフト）が {t.drift_ppm:+.0f} ppm と大きめです。終盤の口の動きと音がずれていないか確認してください"))
+    prints = program_prints(load_program(base), base)
+    if prints:
+        try:
+            embs = {v.source: voiceprint.track_embedding(_existing_denoised(p, v.source, ep_dir)) for v in p.voices}
+            out += voiceprint_findings(p, embs, prints)
+        except Exception:  # 声紋が計算できなければ、前の結果を残す
+            out += [f for f in old if f.get("kind") in ("guest", "weak_match")]
+    tr_path = proj_path.with_suffix(".transcript.json")
+    if tr_path.is_file():
+        out += transcript_findings(Transcript.load(tr_path), p)
+    out = _carry_resolved(out, old)
+    save_review(ep_dir, out)
+    return out
 
 
 # ---------------------------------------------------------------- 一度きりの移行（library-init）

@@ -4,6 +4,7 @@ import { refToOutOrNext } from './editops'
 import { scrubHandler } from './layout'
 import type { Player } from './player'
 import { usePlayhead } from './playhead'
+import { useDark } from './theme'
 import { bgmGainAt, bgmStart, fileTime, formatTime, layout, outToRef, rulerTicks } from './timeline'
 import type { Peaks, Project, Segment, Utterance } from './types'
 
@@ -51,12 +52,12 @@ export function Overview({ project, player, view, total }: { project: Project; p
         {project.bgm.map((c, i) => {
           const s = bgmStart(project, c)
           return <div key={i} style={{ left: pct(s), width: pct(c.duration), top: 0, bottom: 0, background: 'var(--bgm-bg)' }}>
-            <span style={{ fontSize: 11, color: '#D9CCFF', padding: '0 6px' }}>{c.source}</span></div>
+            <span style={{ fontSize: 11, color: 'var(--accent-text)', padding: '0 6px' }}>{c.source}</span></div>
         })}
-        {lay.map((l, i) => <div key={i} style={{ left: pct(l.outStart), width: pct(l.end - l.start), top: 15, height: 6, background: '#2B4466' }} />)}
+        {lay.map((l, i) => <div key={i} style={{ left: pct(l.outStart), width: pct(l.end - l.start), top: 15, height: 6, borderRadius: 3, background: 'rgba(110,139,239,0.5)' }} />)}
         {lay.slice(1).map((l, i) => <div key={i} style={{ left: pct(l.outStart), top: 0, bottom: 0, width: 2, background: 'var(--cut-line)' }} />)}
         {view && <div style={{ left: pct(v0), width: pct(Math.max(v1 - v0, len / 400)), top: 2, bottom: 2, border: '2px solid var(--text)', borderRadius: 4 }} />}
-        <div style={{ left: playOut, top: 0, bottom: 0, width: 2, background: '#fff' }} />
+        <div style={{ left: playOut, top: 0, bottom: 0, width: 2, background: 'var(--text)' }} />
       </div>
     </div>
   )
@@ -160,7 +161,7 @@ export function Tracks(p: TracksProps) {
           onPointerDown={scrubHandler(f => p.player.seek(refToOutOrNext(project.edit, view.start + f * view.span)))}>
           {w > 0 && ticks.map(t => <div key={t} style={{ left: x(t) }}><span className="mono">{formatTime(t, step < 1 ? 1 : 0)}</span></div>)}
           {w > 0 && gaps.filter(([a, b]) => b > view.start && a < view.start + view.span).map(([a, b]) => (
-            <div key={a} style={{ left: Math.max(0, x(a)), width: Math.min(w, x(b)) - Math.max(0, x(a)), top: 1, bottom: 'auto', height: 16, background: '#3A2226', borderRadius: 4, overflow: 'hidden', textAlign: 'center', color: '#FFC2C2', whiteSpace: 'nowrap' }}>
+            <div key={a} style={{ left: Math.max(0, x(a)), width: Math.min(w, x(b)) - Math.max(0, x(a)), top: 1, bottom: 'auto', height: 16, background: 'var(--bad-bg)', borderRadius: 4, overflow: 'hidden', textAlign: 'center', color: 'var(--bad)', whiteSpace: 'nowrap' }}>
               カット {(b - a).toFixed(1)}秒</div>
           ))}
         </div>
@@ -277,6 +278,7 @@ const Ruby = memo(function Ruby({ utterances, sid, view, width }: { utterances: 
 
 /** BGM：出力時刻のクリップを基準時刻の物差しに写し、音量カーブを描く */
 const BgmLane = memo(function BgmLane({ project, view, width }: { project: Project; view: View; width: number }) {
+  const dark = useDark()
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     const cv = ref.current
@@ -296,17 +298,17 @@ const BgmLane = memo(function BgmLane({ project, view, width }: { project: Proje
         const ra = l.start + (a - l.outStart), rb = l.start + (b - l.outStart)
         const xa = ((ra - view.start) / view.span) * width, xb = ((rb - view.start) / view.span) * width
         if (xb < 0 || xa > width) continue
-        g.fillStyle = '#3A2F5C'; g.fillRect(xa, 0, xb - xa, H)
-        g.strokeStyle = '#B79CFF'; g.lineWidth = 1.5; g.beginPath()
+        g.fillStyle = dark ? '#3A2F5C' : '#DCD3FA'; g.fillRect(xa, 0, xb - xa, H)
+        g.strokeStyle = dark ? '#B79CFF' : '#7A5FD0'; g.lineWidth = 1.5; g.beginPath()
         for (let px = Math.max(0, Math.floor(xa)); px <= Math.min(width, xb); px++) {
           const r = view.start + (px / width) * view.span
           const gy = y(bgmGainAt(c, l.outStart + (r - l.start) - s))
           if (px === Math.max(0, Math.floor(xa))) g.moveTo(px, gy); else g.lineTo(px, gy)
         }
         g.stroke()
-        g.fillStyle = '#D9CCFF'; g.font = '11px sans-serif'; g.fillText(c.source, Math.max(xa, 0) + 6, H - 6)
+        g.fillStyle = dark ? '#D9CCFF' : '#4B3A99'; g.font = '11px sans-serif'; g.fillText(c.source, Math.max(xa, 0) + 6, H - 6)
       }
     }
-  }, [project, view, width])
+  }, [project, view, width, dark])
   return <canvas ref={ref} />
 })

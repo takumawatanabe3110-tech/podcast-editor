@@ -9,6 +9,7 @@ import { clamp } from './layout'
 import { addPoint, curveDbAt, cutOutRange, movePoint, pieces, removePiece, setEdge, splitAt, type Piece } from './nle'
 import { BGM_ID, type Player } from './player'
 import { usePlayhead } from './playhead'
+import { isDark, ink, useDark } from './theme'
 import { fileTime, formatTime, rulerTicks } from './timeline'
 import type { BgmClip, Keyframe, Peaks, Project, Utterance } from './types'
 
@@ -17,13 +18,11 @@ export type ChangeOpts = { restart?: boolean }
 
 interface Props {
   project: Project; utterances: Utterance[]; peaks: Record<string, Peaks>; player: Player
-  view: OutView; setView: (v: OutView) => void; total: number; showRuby: boolean; colors: string[]
+  view: OutView; setView: (v: OutView) => void; total: number; showRuby: boolean; setShowRuby?: (b: boolean) => void; colors: string[]
   refDur: (sid: string) => number
   onChange: (p: Project, group?: string, opts?: ChangeOpts) => void
   onOpenFx: (track: string) => void
   onRename: (sid: string, name: string) => void
-  onSaveBgm?: () => void
-  onEnroll?: (sid: string, name: string) => void // この声を声紋として登録
 }
 
 type Sel =
@@ -158,7 +157,10 @@ export function EditTimeline(p: Props) {
     <div className="tl" ref={box}>
       <Follow player={p.player} view={view} setView={p.setView} total={total} />
       <div className="trow">
-        <div />
+        <div className="rubycell">{p.setShowRuby && (
+          <label className="rubytoggle" title="波形の上に文字（フィラーは灰色）を出す">
+            <input type="checkbox" checked={p.showRuby} onChange={e => p.setShowRuby!(e.target.checked)} />ルビ</label>
+        )}</div>
         <div ref={ruler} className="ruler seekable" title="クリック・ドラッグで再生位置を移す（ダブルクリックで全体を表示）"
           onPointerDown={ev => {
             const at = (cx: number) => p.player.seek(Math.max(0, tAt(cx)))
@@ -172,13 +174,7 @@ export function EditTimeline(p: Props) {
       {project.voices.map((v, vi) => (
         <div className="trow" key={v.source}>
           <TrackLabel name={v.name || v.source} color={p.colors[vi % p.colors.length]} sub={`${v.gain_db >= 0 ? '+' : ''}${v.gain_db.toFixed(1)} dB${v.mute ? ' ・ ミュート' : ''}`}
-            onRename={n => p.onRename(v.source, n)} onOpen={() => p.onOpenFx(v.source)}
-            extra={p.onEnroll && (
-              <button className="btn icon sm" title="この声を声紋に登録（番組のメンバーとして）" aria-label={`${v.name}の声を声紋に登録`}
-                onClick={ev => { ev.stopPropagation(); p.onEnroll!(v.source, v.name || v.source) }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>
-              </button>
-            )} />
+            onRename={n => p.onRename(v.source, n)} onOpen={() => p.onOpenFx(v.source)} />
           <div className="lane nle" style={{ height: VOICE_H }} onPointerDown={laneDown}>
             <VoiceWave peaks={p.peaks[v.source]} project={project} sid={v.source} ps={ps} view={view} width={w} color={p.colors[vi % p.colors.length]}
               top={p.showRuby ? 26 : 4} />
@@ -223,10 +219,7 @@ export function EditTimeline(p: Props) {
 
       <div className="trow">
         <TrackLabel name="BGM" fixed color="#B79CFF" sub={project.bgm.map(c => c.source).join('・') || 'なし'}
-          onOpen={() => p.onOpenFx(BGM_ID)} extra={p.onSaveBgm && (
-            <button className="btn icon sm" title="BGM の置き方をいつもの設定に保存" aria-label="BGM の置き方をいつもの設定に保存"
-              onClick={ev => { ev.stopPropagation(); p.onSaveBgm!() }}>★</button>
-          )} />
+          onOpen={() => p.onOpenFx(BGM_ID)} />
         <div className="lane nle bgm" style={{ height: BGM_H }} onPointerDown={ev => {
           if (ev.button !== 0) return
           p.player.seek(Math.max(0, tAt(ev.clientX))); setSel(null)
@@ -255,7 +248,7 @@ function TrackLabel({ name, color, sub, fixed, onRename, onOpen, extra }: {
   return (
     <div className="tlabel clickable" onClick={onOpen} title="クリックでエフェクトを開く">
       <div className="tname">
-        <span className="dot" style={{ background: color, borderRadius: fixed ? 2 : '50%' }} />
+        <span className="dot badge" aria-hidden="true" style={{ background: color }}>{fixed ? '♪' : (name.trim()[0] ?? '')}</span>
         {fixed ? <b>{name}</b> : (
           <input className="nameinput" value={text} aria-label="トラックの名前" title="名前を変える（台本の名前も変わる）"
             onClick={e => e.stopPropagation()}
@@ -279,6 +272,7 @@ function TrackLabel({ name, color, sub, fixed, onRename, onOpen, extra }: {
 const VoiceWave = memo(function VoiceWave({ peaks, project, sid, ps, view, width, color, top }: {
   peaks?: Peaks; project: Project; sid: string; ps: Piece[]; view: OutView; width: number; color: string; top: number
 }) {
+  const dark = useDark()
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     const cv = ref.current
@@ -292,7 +286,7 @@ const VoiceWave = memo(function VoiceWave({ peaks, project, sid, ps, view, width
     for (const q of ps) {
       const xa = Math.max(0, Math.floor(((q.outStart - view.start) / view.span) * width))
       const xb = Math.min(width, Math.ceil(((q.outEnd - view.start) / view.span) * width))
-      g.fillStyle = 'rgba(255,255,255,0.03)'; g.fillRect(xa, 0, xb - xa, H)
+      g.fillStyle = ink(0.04); g.fillRect(xa, 0, xb - xa, H)
       g.fillStyle = color
       for (let px = xa; px < xb; px++) {
         const ta = view.start + (px / width) * view.span, tb = ta + view.span / width
@@ -307,7 +301,7 @@ const VoiceWave = memo(function VoiceWave({ peaks, project, sid, ps, view, width
         g.fillRect(px, y0, 1, Math.max(1, y1 - y0))
       }
     }
-  }, [peaks, project.sync, sid, ps, view, width, color, top])
+  }, [peaks, project.sync, sid, ps, view, width, color, top, dark])
   return <canvas ref={ref} />
 })
 
@@ -393,6 +387,7 @@ function BgmClipView({ clip, ci, project, peaks, view, width, tAt, fileDur, selK
   clip: BgmClip; ci: number; project: Project; peaks?: Peaks; view: OutView; width: number; tAt: (cx: number) => number; fileDur?: number
   selKf: number | null; onSelKf: (i: number | null) => void; onChange: (c: BgmClip, group: string, opts?: ChangeOpts) => void
 }) {
+  useDark() // 外観が変わったら描き直す（下の effect は毎回走る）
   const cv = useRef<HTMLCanvasElement>(null)
   const s = clipStart(project, clip), e = clipEnd(project, clip)
   const x = (t: number) => ((t - view.start) / view.span) * width
@@ -420,7 +415,7 @@ function BgmClipView({ clip, ci, project, peaks, view, width, tAt, fileDur, selK
         g.fillStyle = 'rgba(183,156,255,0.55)'; g.fillRect(px, mid - a, 1, Math.max(1, a * 2))
       }
     }
-    g.strokeStyle = '#E2D6FF'; g.lineWidth = 1.5; g.beginPath()
+    g.strokeStyle = isDark() ? '#E2D6FF' : '#6B4FC8'; g.lineWidth = 1.5; g.beginPath()
     for (let px = Math.floor(x0); px <= x1; px += 2) {
       const ct = (px / (xb - xa)) * clip.duration
       const y = yOf(clipGainDb(clip, Math.min(clip.duration, Math.max(0, ct))))

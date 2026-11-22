@@ -3,12 +3,12 @@ import { useCallback, useEffect, useState } from 'react'
 
 export interface Layout {
   scriptOpen: boolean; scriptW: number
-  mixerOpen: boolean; mixerH: number
+  mixerOpen: boolean; mixerH: number; mixerAuto: boolean // mixerAuto：波形の高さに合わせて、残りをミキサーにする
   bgmSideW: number; bgmLaneH: number
 }
 
 const KEY = 'podcast-editor-layout'
-const DEFAULT: Layout = { scriptOpen: true, scriptW: 380, mixerOpen: true, mixerH: 230, bgmSideW: 340, bgmLaneH: 220 }
+const DEFAULT: Layout = { scriptOpen: true, scriptW: 380, mixerOpen: true, mixerH: 230, mixerAuto: true, bgmSideW: 340, bgmLaneH: 220 }
 
 function load(): Layout {
   try { return { ...DEFAULT, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') } } catch { return DEFAULT }

@@ -8,7 +8,7 @@ async function json<T>(r: Response): Promise<T> {
   return r.json() as Promise<T>
 }
 
-export interface Member { name: string; role: 'mc' | 'guest' | string; voiceprint?: string | null }
+export interface Member { name: string; role: 'mc' | 'guest' | string; voiceprint?: string | null; enrolled?: boolean }
 export interface Program {
   format?: string; version?: number
   name: string; preset?: string | null
@@ -20,11 +20,15 @@ export interface Episode {
   has_project?: boolean; has_transcript?: boolean
   exported?: { path: string; size: number; mtime: number } | null
   duration?: number | null
+  job?: { state: 'queued' | 'running'; position?: number; progress?: number; remaining?: number | null; stage?: string } | null
+  review?: Finding[]; review_open?: number
 }
+export interface Finding { kind: string; message: string; time?: number | null; resolved?: boolean }
 export interface ProgramEntry extends Program { id: string; episodes: Episode[] }
 export interface Library { root: string; programs: ProgramEntry[] }
 export interface Current { program: string; episode: string }
-export interface JobStatus { state: 'running' | 'done' | 'error' | 'idle'; stage?: string; progress?: number; remaining?: number | null; message?: string }
+export interface JobStatus { state: 'queued' | 'running' | 'done' | 'error' | 'idle'; position?: number; stage?: string; progress?: number; remaining?: number | null; message?: string; review?: Finding[] }
+export interface Jobs { running: { program: string; episode: string; stage?: string; progress?: number; remaining?: number | null } | null; queued: { program: string; episode: string; position: number }[] }
 
 const enc = encodeURIComponent
 
@@ -53,3 +57,17 @@ export const createEpisode = (id: string, date: string, files: File[]) => {
 }
 export const episodeStatus = (id: string, ep: string) =>
   fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/status`).then(r => json<JobStatus>(r))
+
+export const getJobs = () => fetch('/api/jobs').then(r => json<Jobs>(r))
+export const cancelJob = (id: string, ep: string) =>
+  fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/job`, { method: 'DELETE' }).then(r => json<unknown>(r))
+export const resolveReview = (id: string, ep: string, resolved: number[]) =>
+  fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/review`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolved }),
+  }).then(r => json<unknown>(r))
+
+export interface TranscriptLine { speaker: string; text: string; start: number; end: number }
+export interface EpisodeTranscript { lines: TranscriptLine[]; duration?: number | null }
+export const getEpisodeTranscript = (id: string, ep: string) =>
+  fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/transcript`).then(r => json<EpisodeTranscript>(r))
+export const episodeAudioUrl = (id: string, ep: string) => `/api/programs/${enc(id)}/episodes/${enc(ep)}/audio`

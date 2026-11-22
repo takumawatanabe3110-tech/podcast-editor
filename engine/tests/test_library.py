@@ -340,7 +340,7 @@ def wait_status(c, prog, eid, timeout=120):
     t0 = time.time()
     while time.time() - t0 < timeout:
         st = c.get(f"/api/programs/{prog}/episodes/{eid}/status").json()
-        if st["state"] != "running":
+        if st["state"] not in ("queued", "running"):
             return st
         time.sleep(0.05)
     raise AssertionError("終わらない")
@@ -435,26 +435,162 @@ def test_episode_bad_requests(job_env):
     assert not (d / "20261204").exists()
 
 
-def test_episode_job_conflict_409(job_env, monkeypatch):
-    c, d, waves, _ = job_env
-    gate = threading.Event()
-
-    def slow(program_dir, date, files, progress, log=lambda s: None):
+def slow_build(gate, started=None, order=None):
+    """gate が開くまで終わらない、差し替え用の build_episode。"""
+    def slow(program_dir, date, files, progress, log=lambda s: None, **kw):
+        if order is not None:
+            order.append(date)
+        if started is not None:
+            started.set()
         progress(0.5, "途中")
         gate.wait(30)
         return program_dir / date / f"{date}.podproj"
+    return slow
 
-    monkeypatch.setattr(server, "build_episode", slow)
+
+def test_episode_jobs_queue_fifo(job_env, monkeypatch):
+    c, d, waves, _ = job_env
+    gate, started, order = threading.Event(), threading.Event(), []
+    monkeypatch.setattr(server, "build_episode", slow_build(gate, started, order))
+    r1 = post_episode(c, waves, date="20261204")
+    assert r1.status_code == 200 and r1.json()["state"] == "queued"
+    assert started.wait(10)
+    r2 = post_episode(c, waves, date="20261211")  # 2本目は 409 ではなく順番待ち
+    assert r2.status_code == 200 and r2.json()["position"] == 1
+    st1 = c.get("/api/programs/番組/episodes/20261204/status").json()
+    assert st1["state"] == "running" and st1["stage"] == "途中" and st1["progress"] == 0.5 and st1["review"] == []
+    st2 = c.get("/api/programs/番組/episodes/20261211/status").json()
+    assert st2["state"] == "queued" and st2["position"] == 1
+    assert (d / "20261211" / "素材" / "a.wav").is_file()  # 素材は受け取った時点で保存
+    # /api/jobs
+    jb = c.get("/api/jobs").json()
+    assert jb["running"]["program"] == "番組" and jb["running"]["episode"] == "20261204"
+    assert jb["running"]["stage"] == "途中" and jb["running"]["progress"] == 0.5 and "remaining" in jb["running"]
+    assert jb["queued"] == [{"program": "番組", "episode": "20261211", "position": 1}]
+    # 一覧に job が入る
+    eps = {e["id"]: e for e in c.get("/api/library").json()["programs"][0]["episodes"]}
+    assert eps["20261204"]["job"]["state"] == "running" and eps["20261204"]["job"]["progress"] == 0.5
+    assert eps["20261211"]["job"] == {"state": "queued", "position": 1}
+    # 同じ日は 409（実行中も順番待ちも）
+    assert post_episode(c, waves, date="20261204").status_code == 409
+    assert post_episode(c, waves, date="20261211").status_code == 409
+    gate.set()
+    assert wait_status(c, "番組", "20261211")["state"] == "done"
+    assert order == ["20261204", "20261211"]
+    assert c.get("/api/jobs").json() == {"running": None, "queued": []}
+
+
+def test_cancel_queued_job(job_env, monkeypatch):
+    c, d, waves, _ = job_env
+    gate, started = threading.Event(), threading.Event()
+    monkeypatch.setattr(server, "build_episode", slow_build(gate, started))
     assert post_episode(c, waves, date="20261204").status_code == 200
-    st = c.get("/api/programs/番組/episodes/20261204/status").json()
-    assert st["state"] == "running" and st["stage"] == "途中" and st["progress"] == 0.5
-    r = post_episode(c, waves, date="20261211")
-    assert r.status_code == 409
-    assert not (d / "20261211").exists()
+    assert started.wait(10)
+    assert post_episode(c, waves, date="20261211").status_code == 200
+    assert c.delete("/api/programs/番組/episodes/20261204/job").status_code == 409  # 実行中は不可
+    assert c.delete("/api/programs/番組/episodes/20261211/job").status_code == 200
+    assert c.delete("/api/programs/番組/episodes/20261211/job").status_code == 404
+    assert c.get("/api/jobs").json()["queued"] == []
+    assert c.get("/api/programs/番組/episodes/20261211/status").json()["state"] == "idle"
+    assert (d / "20261211" / "素材" / "a.wav").is_file()  # 素材は残す
     gate.set()
     assert wait_status(c, "番組", "20261204")["state"] == "done"
-    assert post_episode(c, waves, date="20261211").status_code == 200  # 終われば次が始められる
+    assert post_episode(c, waves, date="20261211").status_code == 200  # 取り消した日はまた入れられる
     wait_status(c, "番組", "20261211")
+
+
+def test_names_and_title_are_passed(job_env, monkeypatch):
+    c, d, waves, _ = job_env
+    seen = {}
+
+    def fake(program_dir, date, files, progress, log=lambda s: None, names=None, title=None):
+        seen.update(files=[f.name for f in files], names=names, title=title)
+
+    monkeypatch.setattr(server, "build_episode", fake)
+    files = [("files", (n, wav_bytes(w), "audio/wav")) for n, w in zip(("b.wav", "a.wav"), waves)]
+    r = c.post("/api/programs/番組/episodes", files=files,
+               data={"date": "20261204", "names": json.dumps(["青木さん", ""]), "title": "特別回"})
+    assert r.status_code == 200
+    wait_status(c, "番組", "20261204")
+    assert seen == {"files": ["a.wav", "b.wav"], "names": ["voice1", "青木さん"], "title": "特別回"}  # 名前順に並べ直しても対応は保つ
+    bad = c.post("/api/programs/番組/episodes", files=files, data={"date": "20261211", "names": json.dumps(["x"])})
+    assert bad.status_code == 400
+
+
+def test_review_written_with_no_clap_and_guest(job_env, monkeypatch):
+    from podcast_engine import sync
+
+    c, d, waves, _ = job_env
+    real = sync.sync_tracks
+
+    def no_clap(*a, **k):
+        r = real(*a, **k)
+        r.clap_time_ref_sec = None
+        return r
+
+    monkeypatch.setattr(sync, "sync_tracks", no_clap)
+    assert post_episode(c, waves).status_code == 200
+    st = wait_status(c, "番組", "20261204")
+    assert st["state"] == "done", st
+    saved = json.loads((d / "20261204" / "review.json").read_text(encoding="utf-8"))
+    kinds = [f["kind"] for f in saved]
+    assert "no_clap" in kinds and "guest" in kinds
+    guest = next(f for f in saved if f["kind"] == "guest")
+    assert "青木さん" in guest["message"] and "0.90" in guest["message"] and guest["time"] is None
+    assert st["review"] == saved
+    ep = c.get("/api/library").json()["programs"][0]["episodes"][0]
+    assert ep["review"] == saved and ep["review_open"] == len(saved)
+    # 解決済みにする
+    i = kinds.index("no_clap")
+    r = c.put("/api/programs/番組/episodes/20261204/review", json={"resolved": [i]})
+    assert r.status_code == 200 and r.json()[i]["resolved"] is True
+    ep = c.get("/api/library").json()["programs"][0]["episodes"][0]
+    assert ep["review_open"] == len(saved) - 1
+    assert c.put("/api/programs/番組/episodes/20261204/review", json={"resolved": [99]}).status_code == 400
+    assert c.put("/api/programs/番組/episodes/20261204/review", json={"resolved": "x"}).status_code == 400
+    # 作り直しても、拍手なし（同期由来）と解決済みの印は残る
+    r = c.post("/api/programs/番組/episodes/20261204/review")
+    assert r.status_code == 200
+    again = r.json()
+    assert any(f["kind"] == "no_clap" and f.get("resolved") for f in again)
+    assert any(f["kind"] == "guest" for f in again)
+    assert c.post("/api/programs/番組/episodes/20261299/review").status_code == 404
+
+
+def U(speaker, start, end, text, source=None):
+    ws = [Word(start, end, text)]
+    return Utterance(speaker, source or speaker, start, end, text, text, ws)
+
+
+def test_tail_chatter_heuristic():
+    tf = library.tail_chatter_finding
+    # 同じ発言の中で挨拶の後に続く
+    tr = Transcript("m", "ja", [U("a", 0, 5, "今日の話でした"), U("a", 6, 12, "ありがとうございましたそれでは来週の話ですが")])
+    f = tf(tr)
+    assert f["kind"] == "tail_chatter" and f["time"] == 12.0 or f["time"] is not None
+    assert "ありがとうございました" in f["message"]
+    # 挨拶の直後（5秒以内）に別の発言が始まる
+    tr = Transcript("m", "ja", [U("a", 0, 5, "ありがとうございました"), U("b", 7, 9, "それでね実は")])
+    f = tf(tr)
+    assert f["time"] == 5.0
+    # 双方の挨拶だけなら問題なし
+    tr = Transcript("m", "ja", [U("a", 0, 5, "ありがとうございました。"), U("b", 6, 8, "さよなら")])
+    assert tf(tr) is None
+    # 5秒以上空いていれば問題なし（TAIL_NEXT_SEC）
+    tr = Transcript("m", "ja", [U("a", 0, 5, "ありがとうございました"), U("b", 11, 12, "それでね")])
+    assert tf(tr) is None
+    # 挨拶がなければ問題なし
+    assert tf(Transcript("m", "ja", [U("a", 0, 5, "こんにちは"), U("b", 6, 8, "どうも")])) is None
+
+
+def test_speaker_imbalance_finding():
+    p = Project(name="x", sample_rate=FS, sources={"voice1": Source("a.wav"), "voice2": Source("b.wav")},
+                voices=[Voice("voice1", "青木さん"), Voice("voice2", "内田さん")])
+    tr = Transcript("m", "ja", [U("青木さん", 0, 100, "あ", "voice1"), U("内田さん", 100, 105, "い", "voice2")])
+    f = library.imbalance_findings(tr, p)
+    assert len(f) == 1 and f[0]["kind"] == "speaker_imbalance" and "内田さん" in f[0]["message"]
+    tr = Transcript("m", "ja", [U("青木さん", 0, 100, "あ", "voice1"), U("内田さん", 100, 150, "い", "voice2")])
+    assert library.imbalance_findings(tr, p) == []
 
 
 def test_apply_preset_by_name_unit(tmp_path):
@@ -468,3 +604,69 @@ def test_apply_preset_by_name_unit(tmp_path):
     q = Project(sample_rate=FS, voices=[Voice("a", "x"), Voice("b", "y")])
     presets.apply_preset(q, spec, tmp_path, tmp_path)
     assert [(v.name, v.gain_db) for v in q.voices] == [("青木さん", 7.0), ("内田さん", 9.0)]
+
+
+def test_episode_export_audio_endpoint(tmp_path):
+    """書き出した mp3 を一覧から聴ける（なければ 404、名前のおかしいものは 400）"""
+    from fastapi.testclient import TestClient
+    from podcast_engine.server import create_app
+
+    prog = tmp_path / "番組"
+    (prog / "20261204").mkdir(parents=True)
+    (prog / "program.json").write_text('{"format": "podprogram", "version": 1, "name": "番組", "members": []}', encoding="utf-8")
+    c = TestClient(create_app(library_root=tmp_path))
+    assert c.get("/api/programs/番組/episodes/20261204/audio").status_code == 404
+    (prog / "20261204" / "20261204.mp3").write_bytes(b"ID3fake")
+    r = c.get("/api/programs/番組/episodes/20261204/audio")
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg" and r.content == b"ID3fake"
+    assert c.get("/api/programs/番組/episodes/..%2F..%2Fx/audio").status_code in (400, 404)
+
+
+def _transcript_fixture(tmp_path, with_transcript=True):
+    from podcast_engine.project import Edit
+    from podcast_engine.transcribe import Transcript, Utterance
+
+    prog = tmp_path / "番組"
+    ep = prog / "20261204"
+    ep.mkdir(parents=True)
+    (prog / "program.json").write_text('{"format": "podprogram", "version": 1, "name": "番組", "members": []}', encoding="utf-8")
+    p = Project(sample_rate=FS, sources={"voice1": Source("a.wav")}, voices=[Voice("voice1", "青木さん")],
+                edit=Edit(position=5.0, segments=[Segment(0, 10), Segment(20, 30)], crossfade_ms=0))
+    p.save(ep / "20261204.podproj")
+    if with_transcript:
+        us = [Utterance("voice1", "voice1", 1, 3, "はじめ", "はじめ"),
+              Utterance("voice1", "voice1", 12, 18, "カット中", "カット中"),
+              Utterance("voice1", "voice1", 8, 22, "またぎ", "またぎ"),
+              Utterance("voice1", "voice1", 25, 28, "あと", "あと")]
+        Transcript("m", "ja", us).save(ep / "20261204.transcript.json")
+    return prog
+
+
+def test_episode_transcript_endpoint(tmp_path):
+    """文字起こしは書き出し音声の時刻になる（頭の BGM 分のずれ・カットを反映）"""
+    from fastapi.testclient import TestClient
+    from podcast_engine.server import create_app
+
+    _transcript_fixture(tmp_path)
+    c = TestClient(create_app(library_root=tmp_path))
+    r = c.get("/api/programs/番組/episodes/20261204/transcript")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["duration"] == 25.0
+    assert j["lines"] == [
+        {"speaker": "青木さん", "text": "はじめ", "start": 6.0, "end": 8.0},
+        {"speaker": "青木さん", "text": "またぎ", "start": 13.0, "end": 17.0},
+        {"speaker": "青木さん", "text": "あと", "start": 20.0, "end": 23.0},
+    ]
+
+
+def test_episode_transcript_endpoint_errors(tmp_path):
+    from fastapi.testclient import TestClient
+    from podcast_engine.server import create_app
+
+    _transcript_fixture(tmp_path, with_transcript=False)
+    (tmp_path / "番組" / "20261205").mkdir()
+    c = TestClient(create_app(library_root=tmp_path))
+    assert c.get("/api/programs/番組/episodes/20261204/transcript").status_code == 404  # 文字起こしなし
+    assert c.get("/api/programs/番組/episodes/20261205/transcript").status_code == 404  # プロジェクトなし
+    assert c.get("/api/programs/番組/episodes/..%2Fx/transcript").status_code in (400, 404)
