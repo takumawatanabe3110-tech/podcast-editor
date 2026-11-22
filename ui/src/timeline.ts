@@ -49,6 +49,24 @@ export function fileTime(sync: Sync, sourceId: string, refT: number): number {
   return refT + tr.offset_sec + tr.drift_ppm * 1e-6 * refT
 }
 
+/**
+ * トラックの「位置」（ms）：基準トラックから見て、このトラックをどれだけ後ろに置いているか。
+ * = −offset_sec×1000。プラスを増やすと声が遅れて聞こえ、波形は右へ動く（編集ソフトでクリップを右へずらすのと同じ向き）
+ */
+export function trackPosMs(sync: Sync, sourceId: string): number {
+  if (sourceId === sync.reference) return 0
+  return -(sync.tracks[sourceId]?.offset_sec ?? 0) * 1000
+}
+
+/** トラックの位置（ms）を変えた Sync を返す。0.1ms 単位に丸める。基準トラックは動かさない */
+export function setTrackPosMs(sync: Sync, sourceId: string, ms: number): Sync {
+  if (sourceId === sync.reference || !Number.isFinite(ms)) return sync
+  const cur = sync.tracks[sourceId] ?? { offset_sec: 0, drift_ppm: 0 }
+  const offset_sec = -Math.round(ms * 10) / 10000
+  if (offset_sec === cur.offset_sec) return sync
+  return { ...sync, tracks: { ...sync.tracks, [sourceId]: { ...cur, offset_sec } } }
+}
+
 export function anchorTime(project: Project, anchor: string): number {
   if (anchor === 'voice_start') return project.edit.position
   if (anchor === 'voice_end') return outputEnd(project.edit)

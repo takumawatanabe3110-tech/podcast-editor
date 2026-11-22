@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   anchorTime, bgmGainAt, bgmGainCurve, bgmPieces, bgmStart, coveredFraction, cutRange, fileTime,
   formatTime, isCut, layout, normalizeSegments, outToRef, outputEnd, refToOut, restoreRange,
-  rulerTicks, voicePieces,
+  rulerTicks, setTrackPosMs, trackPosMs, voicePieces,
 } from './timeline'
 import type { BgmClip, Edit, Project, Segment } from './types'
 
@@ -63,6 +63,35 @@ describe('fileTime', () => {
   it('基準はそのまま', () => expect(fileTime(sync, 'a', 12)).toBe(12))
   it('オフセット＋ドリフト', () => expect(fileTime(sync, 'b', 100)).toBeCloseTo(100 + 0.5 + 0.01))
   it('トラックなしは 0', () => expect(fileTime(sync, 'c', 7)).toBe(7))
+})
+
+describe('trackPosMs / setTrackPosMs（同期の微調整）', () => {
+  const sync = { reference: 'a', tracks: { b: { offset_sec: -2.3967, drift_ppm: 0.1, method: 'clap' } } }
+  it('位置は −offset（ms）', () => {
+    expect(trackPosMs(sync, 'b')).toBeCloseTo(2396.7)
+    expect(trackPosMs(sync, 'a')).toBe(0)
+  })
+  it('+10ms で offset が 10ms 減り、ドリフトなどはそのまま', () => {
+    const s = setTrackPosMs(sync, 'b', trackPosMs(sync, 'b') + 10)
+    expect(s.tracks.b.offset_sec).toBeCloseTo(-2.4067, 6)
+    expect(s.tracks.b).toMatchObject({ drift_ppm: 0.1, method: 'clap' })
+    expect(sync.tracks.b.offset_sec).toBe(-2.3967) // 元は変えない（元に戻す用）
+    expect(fileTime(s, 'b', 100) - fileTime(sync, 'b', 100)).toBeCloseTo(-0.01, 6)
+  })
+  it('0.1ms 単位に丸める・基準は動かさない・同じ値なら同じものを返す', () => {
+    expect(setTrackPosMs(sync, 'b', 12.345).tracks.b.offset_sec).toBeCloseTo(-0.0123, 9)
+    expect(setTrackPosMs(sync, 'a', 5)).toBe(sync)
+    expect(setTrackPosMs(sync, 'b', 2396.7)).toBe(sync)
+    expect(setTrackPosMs(sync, 'b', NaN)).toBe(sync)
+  })
+  it('トラックの記録がなければ作る', () => {
+    expect(setTrackPosMs({ reference: 'a', tracks: {} }, 'c', -3).tracks.c).toEqual({ offset_sec: 0.003, drift_ppm: 0 })
+  })
+  it('再生の予定表にも効く（遅らせると素材の読み始めが前になる）', () => {
+    const p0 = project(edit([{ start: 10, end: 20 }]), [], { b: { offset_sec: 1, drift_ppm: 0 } })
+    const p1 = { ...p0, sync: setTrackPosMs(p0.sync, 'b', trackPosMs(p0.sync, 'b') + 25) }
+    expect(voicePieces(p1, 'b', 0)[0].fileStart - voicePieces(p0, 'b', 0)[0].fileStart).toBeCloseTo(-0.025, 6)
+  })
 })
 
 describe('anchorTime / bgmStart', () => {

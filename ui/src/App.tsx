@@ -22,7 +22,7 @@ type Screen = 'edit' | 'fx'
 
 /** 並び（カット・BGM の位置やカーブ）が変わったか。変わっていなければ鳴らし直さずに音量だけ変える */
 function structuralChange(a: Project, b: Project) {
-  return a.edit !== b.edit || a.bgm !== b.bgm || a.voices.some((v, i) => v.keyframes !== b.voices[i]?.keyframes)
+  return a.edit !== b.edit || a.bgm !== b.bgm || a.sync !== b.sync || a.voices.some((v, i) => v.keyframes !== b.voices[i]?.keyframes)
 }
 
 export default function App({ current, onShowList, player: given, active = true, onReady }: {

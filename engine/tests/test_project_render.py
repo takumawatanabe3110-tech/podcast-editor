@@ -221,3 +221,34 @@ def test_export_progress_monotonic_to_one(tmp_path, ext):
     fr = [f for f, _ in calls]
     assert fr == sorted(fr) and fr[-1] == 1.0 and 0.0 <= fr[0] and len(fr) >= 4
     assert all(isinstance(s, str) and s for _, s in calls)
+
+
+def test_offset_nudge_shifts_voice_in_render(tmp_path):
+    """同期オフセットを数 ms 微調整すると、書き出しでその声がちょうどその分だけずれる。
+    file時刻 = 基準時刻 + offset_sec なので、offset を d 減らすと声は d 秒「遅く」鳴る。"""
+    click_file_t = 5.0
+    ref = np.zeros(int(10 * FS), dtype=np.float32)
+    ref[int(1.0 * FS)] = 0.2  # 基準側にも小さなクリック（影響しないことの確認）
+    voice = np.zeros(int(10 * FS), dtype=np.float32)
+    voice[int(click_file_t * FS)] = 0.8
+    sf.write(tmp_path / "ref.wav", ref, FS, subtype="FLOAT")
+    sf.write(tmp_path / "b.wav", voice, FS, subtype="FLOAT")
+
+    def click_pos(offset):
+        p = Project(
+            sample_rate=FS,
+            sources={"a": Source(str(tmp_path / "ref.wav")), "b": Source(str(tmp_path / "b.wav"))},
+            sync=Sync("a", {"b": TrackOffset(offset)}),
+            voices=[Voice("a"), Voice("b")],
+            edit=Edit(position=0.0, segments=[Segment(2.0, 9.0)], crossfade_ms=0),
+            output=RAW,
+        )
+        audio, _ = render(p, tmp_path)
+        mono = np.abs(audio).sum(axis=0)
+        mono[: int(2.0 * FS)] = 0  # 基準側クリック（出力 -1秒付近）は範囲外だが念のため
+        return int(np.argmax(mono))
+
+    base = click_pos(-1.0)  # 出力時刻 = 5.0 - (-1.0) - 2.0 = 4.0 秒
+    assert abs(base - 4.0 * FS) <= 1
+    assert abs((click_pos(-1.0 - 0.010) - base) - round(0.010 * FS)) <= 1  # 10ms 遅く
+    assert abs((click_pos(-1.0 + 0.001) - base) - round(-0.001 * FS)) <= 1  # 1ms 早く

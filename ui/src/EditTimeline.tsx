@@ -10,7 +10,7 @@ import { addPoint, curveDbAt, cutOutRange, movePoint, pieces, removePiece, setEd
 import { BGM_ID, type Player } from './player'
 import { usePlayhead } from './playhead'
 import { isDark, ink, useDark } from './theme'
-import { fileTime, formatTime, rulerTicks } from './timeline'
+import { fileTime, formatTime, rulerTicks, setTrackPosMs, trackPosMs } from './timeline'
 import type { BgmClip, Keyframe, Peaks, Project, Utterance } from './types'
 
 export interface OutView { start: number; span: number } // 出力時刻
@@ -32,7 +32,7 @@ type Sel =
   | { kind: 'bkf'; clip: number; i: number }
   | null
 
-const VOICE_H = 120, BGM_H = 70, LABEL_W = 150
+const VOICE_H = 120, BGM_H = 70, LABEL_W = 164
 // 声の音量の線の縦の目盛り（dB）：上が +12、下が −36
 const V_TOP = 12, V_BOT = -36
 // BGM の線：上が +6、下が −42
@@ -177,7 +177,12 @@ export function EditTimeline(p: Props) {
       {project.voices.map((v, vi) => (
         <div className="trow" key={v.source}>
           <TrackLabel name={v.name || v.source} color={p.colors[vi % p.colors.length]} sub={`${v.gain_db >= 0 ? '+' : ''}${v.gain_db.toFixed(1)} dB${v.mute ? ' ・ ミュート' : ''}`}
-            onRename={n => p.onRename(v.source, n)} onOpen={() => p.onOpenFx(v.source)} />
+            onRename={n => p.onRename(v.source, n)} onOpen={() => p.onOpenFx(v.source)}
+            below={<SyncNudge sync={project.sync} sid={v.source}
+              onSet={(ms, group) => {
+                const sync = setTrackPosMs(project.sync, v.source, ms)
+                if (sync !== project.sync) p.onChange({ ...project, sync }, group)
+              }} />} />
           <div className="lane nle" style={{ height: VOICE_H }} onPointerDown={laneDown}>
             <VoiceWave peaks={p.peaks[v.source]} project={project} sid={v.source} ps={ps} view={view} width={w} color={p.colors[vi % p.colors.length]}
               top={p.showRuby ? 26 : 4} />
@@ -243,8 +248,9 @@ export function EditTimeline(p: Props) {
 
 // ---------------------------------------------------------------- トラック名
 
-function TrackLabel({ name, color, sub, fixed, onRename, onOpen, extra }: {
+function TrackLabel({ name, color, sub, fixed, onRename, onOpen, extra, below }: {
   name: string; color: string; sub: string; fixed?: boolean; onRename?: (n: string) => void; onOpen: () => void; extra?: React.ReactNode
+  below?: React.ReactNode
 }) {
   const [text, setText] = useState(name)
   useEffect(() => setText(name), [name])
@@ -266,6 +272,55 @@ function TrackLabel({ name, color, sub, fixed, onRename, onOpen, extra }: {
         {extra}
       </div>
       <small>{sub}</small>
+      {below}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- 同期の微調整（1人のトラックだけ前後にずらす）
+
+const fmtMs = (ms: number) => `${ms > 0 ? '+' : ms < 0 ? '−' : '±'}${Math.abs(ms).toFixed(1)}`
+
+function SyncNudge({ sync, sid, onSet }: { sync: Project['sync']; sid: string; onSet: (ms: number, group: string) => void }) {
+  const isRef = sid === sync.reference
+  const ms = trackPosMs(sync, sid)
+  const [text, setText] = useState(fmtMs(ms))
+  const [editing, setEditing] = useState(false)
+  useEffect(() => { if (!editing) setText(fmtMs(ms)) }, [ms, editing])
+  if (isRef) return <div className="syncnudge ref" title="同期の基準のトラックです。ずらすときは、ほかの人のトラックを動かしてください"><div className="nrow"><span>位置</span><span>基準（±0 ms）</span></div></div>
+  const step = (d: number) => onSet(ms + d, `sync-${sid}`) // 続けて押した分は「元に戻す」1回にまとめる
+  const commit = () => {
+    setEditing(false)
+    const v = parseFloat(text.replace(/[−ー]/g, '-').replace(/[＋±]/g, '+').replace(/[^\d.+-]/g, ''))
+    if (Number.isFinite(v) && Math.abs(v - ms) >= 0.05) onSet(v, `sync-${sid}-${Date.now()}`)
+    else setText(fmtMs(ms))
+  }
+  const btn = (d: number, label: string) => (
+    <button type="button" className="nudge" title={`${Math.abs(d)}ms ${d > 0 ? '遅らせる（波形を右へ）' : '早める（波形を左へ）'}`}
+      onMouseDown={e => e.preventDefault() /* フォーカスを取らない（Space で再生できるように） */}
+      onClick={e => { e.stopPropagation(); step(d) }}>{label}</button>
+  )
+  return (
+    <div className="syncnudge" onClick={e => e.stopPropagation()}
+      title="同期の微調整：基準のトラックから見た、このトラックの位置（ms）。プラスで声が遅れて聞こえ、波形が右へ動く。↑↓で 1ms、Shift+↑↓で 10ms">
+      <div className="nrow"><span>位置</span>
+        <input className="nudgeinput mono" value={text} aria-label="トラックの位置（ミリ秒）" inputMode="decimal"
+          onFocus={e => { setEditing(true); e.target.select() }}
+          onChange={e => setText(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.nativeEvent.isComposing) return
+            e.stopPropagation()
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+            else if (e.key === 'Escape') { setText(fmtMs(ms)); setEditing(false); (e.target as HTMLInputElement).blur() }
+            else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              e.preventDefault()
+              const v = ms + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1)
+              onSet(v, `sync-${sid}`); setText(fmtMs(Math.round(v * 10) / 10))
+            }
+          }} />
+        <span>ms</span></div>
+      <div className="nrow">{btn(-10, '−10')}{btn(-1, '−1')}{btn(1, '+1')}{btn(10, '+10')}</div>
     </div>
   )
 }
