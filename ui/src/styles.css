@@ -327,6 +327,7 @@ select option { background: var(--modal); color: var(--text); }
 /* ---- 編集画面（編集ソフト型のタイムライン） */
 .tl { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .lane.nle { cursor: crosshair; touch-action: none; }
+.lane.nle.movable { cursor: ew-resize; } /* ドラッグでトラックの位置をずらす（Option＋ドラッグは範囲選択） */
 .lane.nle canvas { pointer-events: none; }
 .lane.nle.bgm { cursor: default; }
 .tlabel.clickable { cursor: pointer; }

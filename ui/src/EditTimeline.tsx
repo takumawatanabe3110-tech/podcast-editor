@@ -115,19 +115,29 @@ export function EditTimeline(p: Props) {
   const step = ticks.length > 1 ? ticks[1] - ticks[0] : 1
 
   // 波形の上：クリックで移動、ドラッグで範囲を選ぶ
-  const laneDown = (ev: React.PointerEvent) => {
+  // 波形の上：ドラッグ＝そのトラックの位置（同期のずれ）を動かす、Option＋ドラッグ＝範囲を選ぶ、クリック＝移動
+  const laneDown = (sid: string) => (ev: React.PointerEvent) => {
     if (ev.button !== 0) return
     const a = tAt(ev.clientX)
-    let moved = false
+    const selectRange = ev.altKey
+    const canMove = sid !== project.sync.reference
+    const pos0 = trackPosMs(project.sync, sid), group = `syncdrag-${sid}-${Date.now()}`
+    let moved = false, last = project.sync
     dragging(ev, m => {
+      if (!moved && Math.abs(m.clientX - ev.clientX) <= 3) return
+      moved = true
       const b = tAt(m.clientX)
-      if (Math.abs(m.clientX - ev.clientX) > 3) { moved = true; setSel({ kind: 'range', a: Math.min(a, b), b: Math.max(a, b) }) }
+      if (selectRange) setSel({ kind: 'range', a: Math.min(a, b), b: Math.max(a, b) })
+      else if (canMove) {
+        last = setTrackPosMs(project.sync, sid, pos0 + (b - a) * 1000) // 右へ動かす＝遅らせる
+        p.onChange({ ...project, sync: last }, group, { restart: false })
+      }
     }, () => {
       if (!moved) {
         p.player.seek(Math.max(0, a))
         const hit = latest.current.ps.find(q => a >= q.outStart && a < q.outEnd)
         setSel(hit && ps.length > 1 ? { kind: 'piece', i: hit.i } : null)
-      }
+      } else if (!selectRange && canMove && last !== project.sync) p.onChange({ ...project, sync: last }, group, { restart: true })
     })
   }
 
@@ -183,7 +193,10 @@ export function EditTimeline(p: Props) {
                 const sync = setTrackPosMs(project.sync, v.source, ms)
                 if (sync !== project.sync) p.onChange({ ...project, sync }, group)
               }} />} />
-          <div className="lane nle" style={{ height: VOICE_H }} onPointerDown={laneDown}>
+          <div className={`lane nle${v.source === project.sync.reference ? ' ref' : ' movable'}`} style={{ height: VOICE_H }} onPointerDown={laneDown(v.source)}
+            title={v.source === project.sync.reference
+              ? 'クリックで移動・Option＋ドラッグで範囲を選ぶ（同期の基準のトラックなので、ドラッグでは動かない）'
+              : 'ドラッグでこのトラックの位置（同期）をずらす・Option＋ドラッグで範囲を選ぶ・クリックで移動'}>
             <VoiceWave peaks={p.peaks[v.source]} project={project} sid={v.source} ps={ps} view={view} width={w} color={p.colors[vi % p.colors.length]}
               top={p.showRuby ? 26 : 4} />
             {p.showRuby && <Ruby utterances={p.utterances} sid={v.source} ps={ps} view={view} width={w} />}
