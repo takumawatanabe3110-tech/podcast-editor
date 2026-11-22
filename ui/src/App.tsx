@@ -331,7 +331,7 @@ export default function App({ current, onShowList, player: given, active = true,
         </button>
       </header>
       {screen === 'edit' ? (
-        <div className="body" style={{ gridTemplateColumns: layout.scriptOpen ? `${layout.scriptW}px 14px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+        <div className="body" style={{ gridTemplateColumns: layout.scriptOpen ? `minmax(0, ${layout.scriptW}px) 14px minmax(360px, 1fr)` : 'minmax(0, 1fr)' }}>
           {layout.scriptOpen && <>
             <ScriptPanel project={project} player={player} lines={lines} colors={speakerColor}
               selected={selected} setSelected={setSelected} onSeekRef={seekRef} onEditText={editText} onRestore={restore} />

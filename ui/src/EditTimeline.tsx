@@ -153,8 +153,11 @@ export function EditTimeline(p: Props) {
   }
 
   const range = sel?.kind === 'range' ? sel : null
+  // 名前の欄の幅：いちばん長い名前が切れずに入る広さ（全角1文字 ≒ 15px、丸い印・余白の分を足す）
+  const nameChars = Math.max(0, ...project.voices.map(v => [...(v.name || v.source)].reduce((n, c) => n + (c.charCodeAt(0) > 0xff ? 1 : 0.55), 0)))
+  const labelW = Math.round(Math.min(260, Math.max(LABEL_W, 28 + 8 + 24 + 16 + nameChars * 15)))
   return (
-    <div className="tl" ref={box}>
+    <div className="tl" ref={box} style={{ '--label-w': `${labelW}px` } as React.CSSProperties}>
       <Follow player={p.player} view={view} setView={p.setView} total={total} />
       <div className="trow">
         <div className="rubycell">{p.setShowRuby && (

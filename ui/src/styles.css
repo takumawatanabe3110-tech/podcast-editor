@@ -98,7 +98,7 @@ button { font-family: inherit; color: inherit; }
 .ov > div { position: absolute; pointer-events: none; }
 
 .tracks { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
-.trow { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; }
+.trow { display: grid; grid-template-columns: var(--label-w, 150px) minmax(0, 1fr); gap: 12px; }
 .tlabel { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 10px 12px; background: var(--chip-bg); border: 1px solid transparent; border-radius: 18px; }
 .tlabel b { display: flex; align-items: center; gap: 8px; }
 .tlabel small { color: var(--sub); font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -291,6 +291,9 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .fxdash { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 14px; min-height: 0; flex: 1 1 auto; }
 .fxbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 14px; border-radius: 20px; }
 .fxgroup { display: inline-flex; align-items: center; gap: 8px; }
+.fxgroup select { height: 30px; padding: 0 10px; background: var(--chip-bg); color: var(--text); border: 1px solid transparent; border-radius: 10px; font: inherit; font-size: 13px; }
+.fxgroup select:hover, .fxgroup select:focus { border-color: var(--glass-line); outline: none; }
+select option { background: var(--modal); color: var(--text); }
 .fxlabel { font-size: 12px; color: var(--sub); }
 .fxbar select, .numsm { height: 32px; padding: 0 10px; background: var(--chip-bg); color: var(--text); border: 1px solid transparent; border-radius: 10px; font-size: 13px; }
 .numsm { width: 64px; font-family: 'SF Mono', Menlo, monospace; font-variant-numeric: tabular-nums; }
@@ -379,4 +382,14 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 @media (max-width: 900px) {
   .fxgrid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "eq" "dyn" "fader"; grid-template-rows: minmax(260px, auto) auto auto; }
   .fxgrid .fadercol { min-height: 220px; }
+}
+
+/* 狭い画面（スマホ・細いウィンドウ）：台本を上、波形とミキサーを下に積む */
+@media (max-width: 760px) {
+  .app { padding: 8px; }
+  .appframe { padding: 10px; overflow-y: auto; }
+  .body:not(.bgmbody) { grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(220px, 38vh) auto; gap: 12px; flex: 0 0 auto; }
+  .body:not(.bgmbody) > .splitter.col { display: none; }
+  .editmain { min-height: 520px; }
+  .header .transport { flex-basis: 100%; }
 }
