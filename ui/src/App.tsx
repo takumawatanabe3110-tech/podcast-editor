@@ -4,7 +4,7 @@ import { EditTimeline, type ChangeOpts } from './EditTimeline'
 import { cutLines, refToOutOrNext, restoreLine } from './editops'
 import { EffectsView } from './EffectsView'
 import { Mixer, type ExportStatus } from './Mixer'
-import { MASTER_ID, Player } from './player'
+import { MASTER_ID, Player, faderBasisDb } from './player'
 import type { PresetCtx } from './presetctx'
 import { type Current } from './library'
 import { usePlayhead } from './playhead'
@@ -70,7 +70,7 @@ export default function App({ current, onShowList, player: given, active = true,
         const r = await api.getProject()
         if (!alive) return
         const p = r.project
-        setName(r.name); setProject(p); player.setProject(p)
+        setName(r.name); setProject(p); player.setLevelOffset(r.derived.preview_offset_db ?? null); player.setProject(p)
         setRefTotal(r.derived.sources[p.sync.reference]?.duration ?? r.derived.output_end)
         const first = p.edit.segments[0]?.start ?? 0
         setView({ start: 0, span: 40 }); void first
@@ -234,6 +234,15 @@ export default function App({ current, onShowList, player: given, active = true,
       setExportStatus({ state: 'error', message: String((e as Error).message ?? e) })
     }
   }, [])
+  // 書き出しが終わったら、測った大きさで試聴の音量を合わせ直す（完成版と同じ大きさで聴けるように）
+  const wasRunning = useRef(false)
+  useEffect(() => {
+    const finished = wasRunning.current && exportStatus.state === 'done' // この画面で始めた書き出しが終わった
+    wasRunning.current = exportStatus.state === 'running'
+    const before = finished ? exportStatus.report?.loudness_before_lufs : null
+    const p = projectRef.current
+    if (before != null && p) player.setLevelOffset(before - faderBasisDb(p))
+  }, [exportStatus, player])
   useEffect(() => {
     if (exportStatus.state !== 'running') return
     const id = window.setTimeout(() => { api.getExport().then(setExportStatus, () => {}) }, 1000)

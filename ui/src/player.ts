@@ -28,6 +28,22 @@ export function faderDb(effects: unknown[]): number {
   return db
 }
 
+/** 試聴の音量合わせの基準：声のフェーダーの平均＋マスターのフェーダー（エンジンの fader_basis_db と同じ） */
+export function faderBasisDb(p: Project): number {
+  const fs = p.voices.map(v => faderDb(v.effects))
+  return (fs.length ? fs.reduce((a, b) => a + b, 0) / fs.length : 0) + faderDb(p.master_effects)
+}
+
+/** 測った値がまだないときの見積もり（そろえる前の大きさ − フェーダー）。岡田山ラジオ3回分の実測 −19.8〜−21.0 から */
+const OFFSET_GUESS_DB = -20.2
+
+/** 試聴にかける補正（dB）。書き出しの最後のラウドネス調整で動く分を、先にかけておく */
+export function previewTrimDb(p: Project, offsetDb: number | null): number {
+  const target = (p.output as { loudness_lufs?: number | null }).loudness_lufs
+  if (target == null) return 0 // そろえない設定なら、書き出しもそのままの大きさ
+  return target - ((offsetDb ?? OFFSET_GUESS_DB) + faderBasisDb(p))
+}
+
 type Listener = () => void
 
 interface Strip { gain: GainNode; fx: FxChain; pan?: StereoPannerNode; meter: AnalyserNode }
@@ -43,6 +59,7 @@ export class Player {
   private masterGain: GainNode
   private trim: GainNode
   private trimSet = false
+  private levelOffset: number | null = null
   private outMeter!: AnalyserNode
   private startCtx = 0 // 再生を始めた ctx.currentTime（LEAD 込み）
   private startOut = 0 // そのときの出力時刻
@@ -134,6 +151,13 @@ export class Player {
     return this.startOut + Math.max(0, this.ctx.currentTime - this.startCtx)
   }
 
+  /** 書き出しで測った「フェーダーを除いた大きさ」（なければ null で見積もり）。試聴の音量をこれで合わせ直す */
+  setLevelOffset(offsetDb: number | null) {
+    this.levelOffset = offsetDb
+    this.trimSet = false
+    if (this.project) this.updateMix(this.project)
+  }
+
   setProject(p: Project) {
     this.project = p
     this.updateMix(p)
@@ -151,11 +175,9 @@ export class Player {
     const now = this.ctx.currentTime
     const set = (param: AudioParam, v: number) => param.setTargetAtTime(v, now, 0.015)
     if (!this.trimSet) {
-      // 試聴の音量：最初の設定でフェーダーが上げている分を戻し、完成版（−14 LUFS）に近い大きさで聴く。
+      // 試聴の音量：完成版（−14 LUFS など）と同じ大きさで聴けるようにする。
       // 一度決めたら変えない（フェーダーを動かしたときに、その差が聞こえるように）
-      const fs = p.voices.map(v => faderDb(v.effects))
-      const mean = fs.length ? fs.reduce((a, b) => a + b, 0) / fs.length : 0
-      this.trim.gain.value = dbToGain(-mean - faderDb(p.master_effects) - 0.4)
+      this.trim.gain.value = dbToGain(previewTrimDb(p, this.levelOffset))
       this.trimSet = true
     }
     const soloOn = this.solo.size > 0

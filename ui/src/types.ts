@@ -36,6 +36,7 @@ export interface Derived {
   layout: { out_start: number; start: number; end: number }[]
   bgm: { source: string; start: number; duration: number }[]
   sources: Record<string, { duration: number; sample_rate: number }>
+  preview_offset_db?: number | null // 書き出しで測った大きさ（フェーダーを除く）。試聴の音量合わせ用
 }
 export interface ProjectResponse { name: string; project: Project; derived: Derived }
 

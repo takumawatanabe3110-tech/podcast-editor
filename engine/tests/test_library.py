@@ -786,6 +786,18 @@ def test_auto_export_writes_finished_mp3(tmp_path):
     e = next(x for x in c.get("/api/library").json()["programs"][0]["episodes"] if x["id"] == "20261204")
     assert e["exported"]
     assert c.get("/api/programs/番組/episodes/20261204/audio").headers["content-type"] == "audio/mpeg"
+    # 書き出しで測った大きさ（フェーダーを除く）が残り、編集画面の試聴の音量合わせに使える
+    ws = server.Workspace(ep / "20261204.podproj")
+    off = ws.preview_offset_db()
+    assert off is not None and -60 < off < 0
+    assert ws.derived(ws.load())["preview_offset_db"] == off
+
+
+def test_fader_basis_matches_ui():
+    """試聴の基準（声のフェーダーの平均＋マスター）。画面の faderBasisDb と同じ計算"""
+    p = Project(voices=[Voice("a", "A", effects=[{"type": "gain", "db": 5}]), Voice("b", "B", effects=[{"type": "gain", "db": 3}, {"type": "eq", "bands": []}])],
+                master_effects=[{"type": "gain", "db": 7.8}])
+    assert server.fader_basis_db(p) == pytest.approx(11.8)
 
 
 def test_auto_export_failure_becomes_finding(tmp_path):

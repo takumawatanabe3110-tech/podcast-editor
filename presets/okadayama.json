@@ -48,10 +48,10 @@
       "effects": [
         {"type": "eq", "bands": [
           {"type": "highpass", "freq": 104},
-          {"type": "lowshelf", "freq": 200, "gain_db": 3.4},
-          {"type": "bell", "freq": 509, "gain_db": -0.2, "q": 1.0},
-          {"type": "bell", "freq": 3000, "gain_db": 3.0, "q": 1.0},
-          {"type": "highshelf", "freq": 5000, "gain_db": 0.0}
+          {"type": "lowshelf", "freq": 206, "gain_db": 0.0},
+          {"type": "bell", "freq": 1357, "gain_db": 2.1, "q": 1.0},
+          {"type": "bell", "freq": 2970, "gain_db": 6.6, "q": 1.0},
+          {"type": "highshelf", "freq": 6973, "gain_db": 7.1}
         ]},
         {"type": "gain", "db": 5.0}
       ]

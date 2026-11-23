@@ -74,6 +74,13 @@ def export(project: Project, base_dir: str | Path, out_path: str | Path, progres
     return rep
 
 
+def fader_basis_db(p: Project) -> float:
+    """試聴の音量合わせの基準：声のフェーダー（gain）の平均＋マスターのフェーダー。画面の player.ts と同じ計算。"""
+    fad = lambda fx: sum(float(e.get("db", 0)) for e in fx if e.get("type") == "gain")
+    vs = [fad(v.effects) for v in p.voices]
+    return (sum(vs) / len(vs) if vs else 0.0) + fad(p.master_effects)
+
+
 def _num(x):
     """JSON に入れられない inf / nan を null にする。"""
     return None if isinstance(x, float) and not math.isfinite(x) else x
@@ -96,6 +103,27 @@ class Workspace:
 
     def load(self) -> Project:
         return Project.load(self.path)
+
+    def level_path(self) -> Path:
+        return self.cache / f"{self.path.stem}.level.json"
+
+    def save_level(self, p: Project, rep) -> None:
+        """書き出しで測った「そろえる前の大きさ」を、フェーダーを除いた値で残す（編集画面の試聴を完成版の大きさに合わせる用）。"""
+        before = rep.loudness_before_lufs
+        if before is None or not math.isfinite(before):
+            return
+        try:
+            self.cache.mkdir(exist_ok=True)
+            self.level_path().write_text(json.dumps({"offset_db": before - fader_basis_db(p)}))
+        except OSError:
+            pass
+
+    def preview_offset_db(self) -> Optional[float]:
+        try:
+            v = json.loads(self.level_path().read_text()).get("offset_db")
+            return float(v) if v is not None else None
+        except (OSError, ValueError, TypeError):
+            return None
 
     def transcript_path(self) -> Path:
         return self.path.with_suffix(".transcript.json")
@@ -138,6 +166,7 @@ class Workspace:
 
             proj = self.load()  # 開始時にディスクから読む
             rep = export(proj, self.base, out, on_progress)
+            self.save_level(proj, rep)
             res = {
                 "state": "done", "path": str(out), "elapsed": time.time() - started,
                 "report": {k: _num(v) for k, v in dataclasses.asdict(rep).items()},
@@ -190,6 +219,7 @@ class Workspace:
             "layout": [{"out_start": t, "start": s.start, "end": s.end} for t, s in p.edit.layout()],
             "bgm": [{"source": b.source, "start": p.bgm_start(b), "duration": b.duration} for b in p.bgm],
             "sources": sources,
+            "preview_offset_db": self.preview_offset_db(),
         }
 
     # ---- 波形
@@ -256,6 +286,7 @@ def auto_export(proj_path: Path, progress, log=lambda s: None) -> List[dict]:
     try:
         p = ws.load()  # 文字起こしで話の終わりを切ったあとの状態
         rep = export(p, ws.base, out, scaled(progress, 0.88, 1.0))
+        ws.save_level(p, rep)
     except Exception as e:
         log(f"書き出しに失敗しました：{type(e).__name__}: {e}")
         return [library._finding(
