@@ -518,6 +518,102 @@ def test_names_and_title_are_passed(job_env, monkeypatch):
     assert bad.status_code == 400
 
 
+def _review_env(tmp_path, findings, with_print=True):
+    """番組・エピソード・review.json だけの最小の環境（モデル不要）。"""
+    d = tmp_path / "番組"
+    d.mkdir(parents=True)
+    (d / "program.json").write_text(json.dumps({
+        "format": library.PROGRAM_FORMAT, "version": 1, "name": "番組", "preset": "", "bgm": {},
+        "members": [{"name": "青木さん", "role": "mc", **({"voiceprint": "声紋/青木さん.npz"} if with_print else {})}],
+    }, ensure_ascii=False), encoding="utf-8")
+    if with_print:
+        voiceprint.save_print(d / "声紋" / "青木さん.npz", E_AOKI, {"name": "青木さん", "episode": "20261127", "seconds": 60.0})
+    ed = d / "20261204"
+    ed.mkdir()
+    (ed / "20261204.podproj").write_text("{}", encoding="utf-8")
+    library.save_review(ed, findings)
+    return d, ed
+
+
+def test_review_notes_learning_and_hints(tmp_path, monkeypatch):
+    weak = library._finding("weak_match", "A は 青木さん と判定しましたが点数が低めです（0.80）", source="a", name="青木さん")
+    other = library._finding("no_clap", "拍手なし", 12.5)
+    d, ed = _review_env(tmp_path, [weak, other])
+
+    # note の引き継ぎ
+    old = [dict(other, note="いつもこう", resolved=True)]
+    new = library._carry_resolved([library._finding("no_clap", "拍手なし", 12.5)], old)
+    assert new[0]["note"] == "いつもこう" and new[0]["resolved"] is True
+    assert library._finding("x", "m", source="s")["source"] == "s"
+
+    # 学習：ログと声紋の補強（埋め込みは固定値）
+    e2 = np.array([0, 1, 0, 0], dtype=np.float32)
+    monkeypatch.setattr(library, "_track_embedding_for", lambda *a, **k: (e2, 30.0))
+    msg = library.learn_from_review(d, "20261204", dict(weak, note="本人でした"))
+    assert msg == "青木さんの声紋に 12/4 の声を足しました（2 回分）"
+    emb, meta = voiceprint.load_print(d / "声紋" / "青木さん.npz")
+    assert meta["count"] == 2 and meta["episodes"] == ["20261127", "20261204"] and meta["seconds"] == 90.0
+    assert np.allclose(emb, voiceprint._unit(E_AOKI + e2), atol=1e-6)
+    msg = library.learn_from_review(d, "20261211", dict(weak))
+    assert "3 回分" in msg
+    # 弱い一致でないものはログだけ
+    assert library.learn_from_review(d, "20261204", dict(other, note="メモ")) is None
+    log = [json.loads(x) for x in (d / "review_log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(log) == 3 and log[0]["note"] == "本人でした" and log[0]["name"] == "青木さん" and log[2]["kind"] == "no_clap"
+    # 声紋がなければログだけで None
+    d2, _ = _review_env(tmp_path / "x", [weak], with_print=False)
+    assert library.learn_from_review(d2, "20261204", dict(weak)) is None
+    assert (d2 / "review_log.jsonl").is_file()
+
+    # ヒント：別のエピソードの同じ種類のメモ
+    fs = [library._finding("no_clap", "拍手なし"), library._finding("guest", "g")]
+    library.attach_hints(d, "20261211", fs)
+    assert fs[0]["hints"] == [{"episode": "20261204", "note": "メモ"}] and "hints" not in fs[1]
+    fs2 = [library._finding("no_clap", "拍手なし")]
+    library.attach_hints(d, "20261204", fs2)  # 同じエピソードは除く
+    assert "hints" not in fs2[0]
+    assert [e["note"] for e in library.past_notes(d, "no_clap")] == ["メモ"]
+
+    # 引き継ぎ文
+    f = library.load_review(ed)
+    f[1]["note"] = "要確認メモ"
+    f[1]["hints"] = [{"episode": "20261127", "note": "前回の話"}]
+    library.save_review(ed, f)
+    txt = library.review_handoff_text(d, "20261204")
+    assert "要確認メモ" in txt and "前回の話" in txt and str(ed / "review.json") in txt
+    assert "未確認" in txt and "0:12.5" in txt and "review_log.jsonl" in txt
+
+
+def test_review_put_items_form(tmp_path, monkeypatch):
+    weak = library._finding("weak_match", "弱い", source="a", name="青木さん")
+    d, ed = _review_env(tmp_path, [weak, library._finding("no_clap", "拍手なし")])
+    monkeypatch.setattr(library, "_track_embedding_for", lambda *a, **k: (np.array([0, 1, 0, 0], dtype=np.float32), 10.0))
+    c = TestClient(create_app(library_root=tmp_path))
+    url = "/api/programs/番組/episodes/20261204/review"
+    r = c.put(url, json={"items": [{"index": 0, "resolved": True, "note": "本人"}, {"index": 1, "note": "メモのみ"}]})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["findings"][0]["resolved"] is True and j["findings"][0]["note"] == "本人"
+    assert "resolved" not in j["findings"][1] and j["findings"][1]["note"] == "メモのみ"
+    assert len(j["learned"]) == 1 and "青木さん" in j["learned"][0]
+    # すでに確認済みなら再学習しない
+    r = c.put(url, json={"items": [{"index": 0, "resolved": True}]})
+    assert r.json()["learned"] == []
+    # 戻す
+    r = c.put(url, json={"items": [{"index": 0, "resolved": False}]})
+    assert "resolved" not in r.json()["findings"][0]
+    assert library.load_review(ed)[1]["note"] == "メモのみ"
+    for bad in ({"items": [{"index": 9}]}, {"items": [{"index": "0"}]}, {"items": "x"},
+                {"items": [{"index": 0, "resolved": "yes"}]}, {"items": [{"index": 0, "note": 5}]},
+                {"items": [{"index": 0, "note": "あ" * 2001}]}):
+        assert c.put(url, json=bad).status_code == 400, bad
+    # 旧形式
+    r = c.put(url, json={"resolved": [1]})
+    assert r.json()["findings"][1]["resolved"] is True
+    h = c.get(url + "/handoff").json()["text"]
+    assert "メモのみ" in h and "review.json" in h
+
+
 def test_review_written_with_no_clap_and_guest(job_env, monkeypatch):
     from podcast_engine import sync
 
@@ -544,7 +640,7 @@ def test_review_written_with_no_clap_and_guest(job_env, monkeypatch):
     # 解決済みにする
     i = kinds.index("no_clap")
     r = c.put("/api/programs/番組/episodes/20261204/review", json={"resolved": [i]})
-    assert r.status_code == 200 and r.json()[i]["resolved"] is True
+    assert r.status_code == 200 and r.json()["findings"][i]["resolved"] is True and r.json()["learned"] == []
     ep = c.get("/api/library").json()["programs"][0]["episodes"][0]
     assert ep["review_open"] == len(saved) - 1
     assert c.put("/api/programs/番組/episodes/20261204/review", json={"resolved": [99]}).status_code == 400

@@ -6,3 +6,4 @@
   - Mod：https://github.com/takumawatanabe3110-tech/claude-mods
 - 音声ファイル（wav/mp3/flac等）はコミットしない。テスト用の短い合成音声は生成スクリプトで作る
 - ルール：Claudeは音声を直接扱わず、解析結果と文字起こしから編集指示（JSON）を出す。編集は非破壊（.podproj）
+- 要確認（各回の `<番組>/<日付>/review.json`）：項目ごとに `note`（ユーザーのメモ）と `resolved`（確認済み）がある。「◯◯ の回を確認して」や「Claude に渡す」で貼られた文を受けたら、メモに書かれた指示を優先して対応する。過去の確認とメモは `<番組>/review_log.jsonl` にたまっている

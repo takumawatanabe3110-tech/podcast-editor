@@ -35,6 +35,7 @@ const Icon = {
   gear: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1" /></svg>,
   upload: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 15V3" /><path d="M7 8l5-5 5 5" /><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" /></svg>,
   search: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></svg>,
+  copy: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>,
   edit: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z" /></svg>,
   wave: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M12 4v16" /><path d="M8 8v8" /><path d="M16 8v8" /><path d="M4 11v2" /><path d="M20 11v2" /></svg>,
   back15: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /><text x="12" y="15.5" textAnchor="middle" fontSize="7.5" fill="currentColor" stroke="none" fontWeight="700">15</text></svg>,
@@ -321,6 +322,106 @@ function PlayerBar({ prog, ep, player }: { prog: lib.ProgramEntry; ep: lib.Episo
   )
 }
 
+// ---------------------------------------------------------------- 右：要確認（メモ・確認した・Claude に渡す）
+
+const LEARN_TIP: Record<string, string> = {
+  weak_match: '判定どおりの人なら、この回の声でその人の声紋を強めます',
+  guest: 'ゲストでよければ確認した、を押してください',
+}
+
+/** 文をクリップボードへ。使えないときは古いやり方も試す。できたら true */
+async function copyText(text: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); return true } catch { /* 下へ */ }
+  const ta = document.createElement('textarea')
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+  document.body.appendChild(ta); ta.select()
+  try { return document.execCommand('copy') } catch { return false } finally { ta.remove() }
+}
+
+function Review({ prog, ep, canSeek, onSeek, onRefresh }: {
+  prog: lib.ProgramEntry; ep: lib.Episode; canSeek: boolean; onSeek: (t: number) => void; onRefresh: () => Promise<void>
+}) {
+  const all = (ep.review ?? []).map((f, i) => ({ f, i }))
+  const open = all.filter(x => !x.f.resolved), done = all.filter(x => x.f.resolved)
+  const [notes, setNotes] = useState<Record<number, string>>({})
+  const [busy, setBusy] = useState<number | null>(null)
+  const [msg, setMsg] = useState<{ text: string; tone: '' | 'bad' } | null>(null)
+  useEffect(() => { setNotes({}); setMsg(null) }, [prog.id, ep.id])
+  const noteOf = (i: number, f: lib.Finding) => notes[i] ?? f.note ?? ''
+
+  const send = async (items: lib.ReviewItem[], i: number) => {
+    setBusy(i)
+    try {
+      const r = await lib.updateReview(prog.id, ep.id, items)
+      if (r.learned.length) setMsg({ text: r.learned.join('\n'), tone: '' })
+      await onRefresh()
+      setNotes(n => { const x = { ...n }; delete x[i]; return x })
+    } catch (e) {
+      setMsg({ text: String((e as Error).message), tone: 'bad' })
+    } finally { setBusy(null) }
+  }
+  const saveNote = (i: number, f: lib.Finding) => {
+    const v = notes[i]
+    if (v === undefined || v === (f.note ?? '')) return
+    void send([{ index: i, note: v }], i)
+  }
+  const [manual, setManual] = useState<string | null>(null) // コピーできなかったときに、手で選んでコピーする用
+  const handoff = async () => {
+    let text = ''
+    try { text = await lib.getReviewHandoff(prog.id, ep.id) } catch (e) {
+      setMsg({ text: `まとめを作れませんでした：${String((e as Error).message)}`, tone: 'bad' }); return
+    }
+    if (await copyText(text)) { setManual(null); setMsg({ text: 'コピーしました。Claude Code の入力欄に貼り付けて送ってください', tone: '' }) }
+    else { setManual(text); setMsg(null) }
+  }
+
+  return (
+    <div className={`lib-review${open.length ? '' : ' calm'}`}>
+      <div className="lib-revhead">
+        <b>{open.length ? '確認が必要なところ' : 'すべて確認しました'}</b>
+        <button className="lib-handoff" onClick={() => void handoff()} title="要確認とメモをまとめてコピーします。Claude Code に貼ると、そのまま対応を頼めます">{Icon.copy}Claude に渡す</button>
+      </div>
+      {open.map(({ f, i }) => (
+        <div key={i} className="lib-finding">
+          <button className="lib-time" disabled={!canSeek || f.time == null} onClick={() => f.time != null && onSeek(f.time)}>{f.time != null ? fmtClock(f.time) : '—'}</button>
+          <div className="lib-fbody">
+            <span>{f.message}</span>
+            {(f.hints ?? []).map((h, k) => <small key={k} className="lib-hint">前回のメモ（{fmtDate(h.episode)}）：{h.note}</small>)}
+            <textarea className="lib-note" rows={1} placeholder="メモ（Claude に伝えたいこと）" aria-label="メモ" value={noteOf(i, f)}
+              onChange={e => setNotes(n => ({ ...n, [i]: e.target.value }))} onBlur={() => saveNote(i, f)} />
+          </div>
+          <button className="lib-confirm" disabled={busy === i} title={LEARN_TIP[f.kind] ?? '確認したことと、メモを記録します（次の回の参考にします）'}
+            onClick={() => void send([{ index: i, resolved: true, note: noteOf(i, f) }], i)}>{busy === i ? '記録中…' : '確認した'}</button>
+        </div>
+      ))}
+      {done.length > 0 && (
+        <details className="lib-done">
+          <summary>確認済み {done.length} 件</summary>
+          {done.map(({ f, i }) => (
+            <div key={i} className="lib-finding done">
+              <span className="lib-time">{f.time != null ? fmtClock(f.time) : '—'}</span>
+              <div className="lib-fbody">
+                <span>{f.message}</span>
+                <textarea className="lib-note" rows={1} placeholder="メモ" aria-label="メモ" value={noteOf(i, f)}
+                  onChange={e => setNotes(n => ({ ...n, [i]: e.target.value }))} onBlur={() => saveNote(i, f)} />
+              </div>
+              <span />
+            </div>
+          ))}
+        </details>
+      )}
+      {manual != null && (
+        <div className="lib-manual">
+          <span className="lib-muted">自動でコピーできませんでした。下の文を選んでコピーし（⌘A → ⌘C）、Claude Code に貼ってください</span>
+          <textarea readOnly value={manual} rows={6} onFocus={e => e.currentTarget.select()} aria-label="Claude に渡す文" />
+          <button className="lib-link" onClick={() => setManual(null)}>閉じる</button>
+        </div>
+      )}
+      {msg && <div className={`lib-revmsg ${msg.tone}`} role="status" onClick={() => setMsg(null)}>{msg.text}</div>}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- 右：選んだ回の様子・要確認・文字起こし
 
 function EpisodeSide({ prog, ep, player, onOpen, onRefresh }: { prog: lib.ProgramEntry; ep: lib.Episode; player: Player; onOpen: () => void; onRefresh: () => Promise<void> }) {
@@ -357,18 +458,9 @@ function EpisodeSide({ prog, ep, player, onOpen, onRefresh }: { prog: lib.Progra
         <div><span>話す人</span><b>{speakers.length ? `${speakers.length} 人` : '—'}</b></div>
         <div><span>要確認</span><b className={review.length ? 'warn' : ''}>{ep.has_project ? (review.length ? `${review.length} 件` : 'なし') : '—'}</b></div>
       </div>
-      {review.length > 0 && (
-        <div className="lib-review">
-          <b>確認が必要なところ</b>
-          {review.map(({ f, i }) => (
-            <div key={i} className="lib-finding">
-              <button className="lib-time" disabled={!player.canPlay(prog.id, ep.id, !!ep.exported) || f.time == null} onClick={() => f.time != null && player.load(prog.id, ep.id, ep.duration ?? 0, true, f.time)}>{f.time != null ? fmtClock(f.time) : '—'}</button>
-              <span>{f.message}</span>
-              <button className="lib-link" onClick={() => void lib.resolveReview(prog.id, ep.id, [i]).then(onRefresh)}>確認した</button>
-            </div>
-          ))}
-          <span className="lib-muted">編集画面で確かめるか、Claude Code に「{fmtDate(ep.id)} の回を確認して」と頼んでください</span>
-        </div>
+      {(ep.review ?? []).length > 0 && (
+        <Review prog={prog} ep={ep} onRefresh={onRefresh}
+          canSeek={player.canPlay(prog.id, ep.id, !!ep.exported)} onSeek={t => player.load(prog.id, ep.id, ep.duration ?? 0, true, t)} />
       )}
       <b className="lib-trhead">文字起こし</b>
       <div className="lib-lines" ref={listRef}>

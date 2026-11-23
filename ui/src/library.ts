@@ -23,7 +23,16 @@ export interface Episode {
   job?: { state: 'queued' | 'running'; position?: number; progress?: number; remaining?: number | null; stage?: string } | null
   review?: Finding[]; review_open?: number
 }
-export interface Finding { kind: string; message: string; time?: number | null; resolved?: boolean }
+export interface Finding {
+  kind: string; message: string; time?: number | null; resolved?: boolean
+  /** ユーザーのメモ（Claude に渡す） */
+  note?: string
+  /** 同じ種類の、前の回のメモ */
+  hints?: { episode: string; note: string }[]
+  source?: string; name?: string
+}
+export interface ReviewItem { index: number; resolved?: boolean; note?: string }
+export interface ReviewResult { findings: Finding[]; learned: string[] }
 export interface ProgramEntry extends Program { id: string; episodes: Episode[] }
 export interface Library { root: string; programs: ProgramEntry[] }
 export interface Current { program: string; episode: string }
@@ -61,10 +70,14 @@ export const episodeStatus = (id: string, ep: string) =>
 export const getJobs = () => fetch('/api/jobs').then(r => json<Jobs>(r))
 export const cancelJob = (id: string, ep: string) =>
   fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/job`, { method: 'DELETE' }).then(r => json<unknown>(r))
-export const resolveReview = (id: string, ep: string, resolved: number[]) =>
+/** 要確認を「確認した」にしたり、メモを書いたりする。確認したときは、その答えから学ぶ（learned に何をしたか） */
+export const updateReview = (id: string, ep: string, items: ReviewItem[]) =>
   fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/review`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolved }),
-  }).then(r => json<unknown>(r))
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
+  }).then(r => json<ReviewResult>(r)).then(r => ({ findings: r.findings ?? [], learned: (r.learned ?? []).filter(Boolean) }))
+/** Claude Code に貼るための、要確認とメモのまとめ */
+export const getReviewHandoff = (id: string, ep: string) =>
+  fetch(`/api/programs/${enc(id)}/episodes/${enc(ep)}/review/handoff`).then(r => json<{ text: string }>(r)).then(r => r.text)
 
 export interface TranscriptLine { speaker: string; text: string; start: number; end: number }
 export interface EpisodeTranscript { lines: TranscriptLine[]; duration?: number | null }

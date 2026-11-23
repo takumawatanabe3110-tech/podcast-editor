@@ -14,9 +14,11 @@ import json
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
+
+import numpy as np
 
 from . import audio_io
 from .project import CACHE_DIR, DEFAULT_DENOISE, Project, Segment, Source, Sync, TrackOffset, Voice
@@ -298,22 +300,12 @@ def valid_date(text: str) -> str:
 # ---------------------------------------------------------------- 声紋の登録
 
 
-def enroll_voiceprint(
-    program_dir, name: str, episode: str, source: str, role: Optional[str] = None,
-    max_seconds: float = 120,
-) -> dict:
-    """エピソードの1トラックから声紋を作り、番組のメンバーに登録する。メンバー（dict）を返す。
-
-    ノイズ除去済みのキャッシュがあればそれを使う。文字起こしがあり、そのトラックの話者の発言があれば、
-    その区間（長い順）だけを使う。なければ音量の大きい部分。
-    """
+def _track_embedding_for(program_dir, episode: str, source: str, max_seconds: float = 120):
+    """エピソードの1トラックの声紋（埋め込み）と、使った秒数を返す。登録・声紋の補強で共通。"""
     from . import voiceprint
     from .transcribe import Transcript
 
     base = Path(program_dir)
-    check_name(name, "メンバー名")
-    if role is not None and role not in ROLES:
-        raise ValueError(f"role は {' / '.join(ROLES)} のどちらかです")
     ep_dir = base / check_name(episode, "エピソード")
     proj_path = episode_project_path(ep_dir)
     if proj_path is None:
@@ -341,6 +333,25 @@ def enroll_voiceprint(
         seconds = min(max_seconds, sum(b - a for a, b in segments))
     else:
         seconds = min(max_seconds, audio_io.info(path).duration)
+    return emb, float(seconds)
+
+
+def enroll_voiceprint(
+    program_dir, name: str, episode: str, source: str, role: Optional[str] = None,
+    max_seconds: float = 120,
+) -> dict:
+    """エピソードの1トラックから声紋を作り、番組のメンバーに登録する。メンバー（dict）を返す。
+
+    ノイズ除去済みのキャッシュがあればそれを使う。文字起こしがあり、そのトラックの話者の発言があれば、
+    その区間（長い順）だけを使う。なければ音量の大きい部分。
+    """
+    from . import voiceprint
+
+    base = Path(program_dir)
+    check_name(name, "メンバー名")
+    if role is not None and role not in ROLES:
+        raise ValueError(f"role は {' / '.join(ROLES)} のどちらかです")
+    emb, seconds = _track_embedding_for(base, episode, source, max_seconds)
     rel = f"{PRINT_DIR}/{name}.npz"
     voiceprint.save_print(base / rel, emb, {
         "name": name, "episode": episode, "source": source, "seconds": round(float(seconds), 1),
@@ -565,8 +576,11 @@ _PUNCT = " 　、。，．,.!！?？ー〜~…\n"
 _FILLER_WORDS = ("はい", "どうも", "ありがとう", "ばいばい", "お疲れさまでした", "お疲れ様でした")
 
 
-def _finding(kind: str, message: str, time: Optional[float] = None) -> dict:
-    return {"kind": kind, "message": message, "time": None if time is None else round(float(time), 2)}
+def _finding(kind: str, message: str, time: Optional[float] = None, **extra) -> dict:
+    """要確認1件。extra（source / name / near など）はそのまま付ける。"""
+    d = {"kind": kind, "message": message, "time": None if time is None else round(float(time), 2)}
+    d.update(extra)
+    return d
 
 
 def _mmss(t: float) -> str:
@@ -620,14 +634,16 @@ def voiceprint_findings(p: Project, embs: Dict[str, "np.ndarray"], prints: Dict[
         if name in prints:
             s = voiceprint.similarity(emb, prints[name])
             if s < voiceprint.THRESHOLD + WEAK_MARGIN:
-                out.append(_finding("weak_match", f"{label} は {name} と判定しましたが点数が低めです（{s:.2f}）。別の人でないか確認してください"))
+                out.append(_finding("weak_match", f"{label} は {name} と判定しましたが点数が低めです（{s:.2f}）。別の人でないか確認してください",
+                                    source=v.source, name=name))
         elif name.startswith("ゲスト"):
             near, best = None, -1.0
             for m, e in prints.items():
                 s = voiceprint.similarity(emb, e)
                 if s > best:
                     near, best = m, s
-            out.append(_finding("guest", f"{label} はメンバーの声紋に合いませんでした（{near}に近い（{best:.2f}）がしきい値 {voiceprint.THRESHOLD:.2f} 未満）。ゲストでよいか確認してください"))
+            out.append(_finding("guest", f"{label} はメンバーの声紋に合いませんでした（{near}に近い（{best:.2f}）がしきい値 {voiceprint.THRESHOLD:.2f} 未満）。ゲストでよいか確認してください",
+                                source=v.source, name=name, near=near))
     return out
 
 
@@ -696,12 +712,117 @@ def transcript_findings(tr, p: Project) -> List[dict]:
     return out + imbalance_findings(tr, p)
 
 
+REVIEW_LOG = "review_log.jsonl"
+
+
+def _read_log(program_dir) -> List[dict]:
+    f = Path(program_dir) / REVIEW_LOG
+    out = []
+    try:
+        lines = f.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d, dict):
+            out.append(d)
+    return out
+
+
+def past_notes(program_dir, kind: str, limit: int = 3) -> List[dict]:
+    """過去の確認ログから、同じ種類でメモのあるもの（新しい順に limit 件）。"""
+    hits = [e for e in _read_log(program_dir) if e.get("kind") == kind and (e.get("note") or "").strip()]
+    return hits[::-1][:limit]
+
+
+def attach_hints(program_dir, eid: str, findings: List[dict]) -> List[dict]:
+    """各指摘に、同じ種類の前回までのメモ（別のエピソード分）を hints として付ける。"""
+    for f in findings:
+        hints = [{"episode": e.get("episode"), "note": e["note"]}
+                 for e in past_notes(program_dir, f.get("kind", ""), limit=10) if e.get("episode") != eid][:3]
+        if hints:
+            f["hints"] = hints
+        else:
+            f.pop("hints", None)
+    return findings
+
+
+def learn_from_review(program_dir, eid: str, finding: dict) -> Optional[str]:
+    """指摘を確認済みにしたときの学習。ログに1行足し、声紋が弱い一致ならその声を声紋に足す。
+    足したときだけ日本語のメッセージを返す。"""
+    from . import voiceprint
+
+    base = Path(program_dir)
+    entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "episode": eid,
+             "kind": finding.get("kind"), "message": finding.get("message"),
+             "time": finding.get("time"), "note": finding.get("note") or ""}
+    for k in ("source", "name"):
+        if finding.get(k):
+            entry[k] = finding[k]
+    with open(base / REVIEW_LOG, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    name, source = finding.get("name"), finding.get("source")
+    if finding.get("kind") != "weak_match" or not name or not source:
+        return None
+    try:
+        member = next((m for m in load_program(base)["members"] if m["name"] == name), None)
+        if member is None or not member.get("voiceprint"):
+            return None
+        f = inside(base, member["voiceprint"])
+        if not f.is_file():
+            return None
+        old, meta = voiceprint.load_print(f)
+        emb, seconds = _track_embedding_for(base, eid, source)
+        n = int(meta.get("count", 1))
+        eps = list(meta.get("episodes") or ([meta["episode"]] if meta.get("episode") else []))
+        eps.append(eid)
+        meta.update({"count": n + 1, "episodes": eps,
+                     "seconds": round(float(meta.get("seconds", 0)) + float(seconds), 1)})
+        voiceprint.save_print(f, voiceprint._unit(np.asarray(old, dtype=np.float64) * n + emb), meta)
+    except Exception:
+        return None
+    day = f"{int(eid[4:6])}/{int(eid[6:8])}" if DATE_RE.match(eid) else eid
+    return f"{name}の声紋に {day} の声を足しました（{n + 1} 回分）"
+
+
+def review_handoff_text(program_dir, eid: str) -> str:
+    """要確認を Claude に渡すための文章（Markdown）。"""
+    base = Path(program_dir)
+    findings = load_review(base / eid)
+    date = _date_text(eid) if DATE_RE.match(eid) else eid
+    lines = [f"# 要確認の引き継ぎ：{base.name} {date}", "",
+             f"- 番組：{base.name}", f"- エピソード：{date}（{eid}）",
+             f"- 要確認のファイル：{base / eid / REVIEW_FILE}", ""]
+    for i, f in enumerate(findings):
+        state = "確認済み" if f.get("resolved") else "未確認"
+        t = f" {_mmss(f['time'])}" if f.get("time") is not None else ""
+        lines.append(f"## {i + 1}. [{f.get('kind')}] {state}{t}")
+        lines.append(str(f.get("message", "")))
+        if f.get("note"):
+            lines.append(f"- メモ：{f['note']}")
+        for h in f.get("hints") or []:
+            lines.append(f"- 前回のメモ（{h.get('episode')}）：{h.get('note')}")
+        lines.append("")
+    if not findings:
+        lines += ["（要確認はありません）", ""]
+    lines.append(f"メモのある項目について、内容を読んで対応してください。過去の確認の記録は {base / REVIEW_LOG} にあります。")
+    return "\n".join(lines) + "\n"
+
+
 def _carry_resolved(new: List[dict], old: List[dict]) -> List[dict]:
     """同じ種類・同じ文の指摘は、前の「解決済み」を引き継ぐ。"""
     done = {(f.get("kind"), f.get("message")) for f in old if f.get("resolved")}
+    notes = {(f.get("kind"), f.get("message")): f["note"] for f in old if f.get("note")}
     for f in new:
-        if (f["kind"], f["message"]) in done:
+        key = (f["kind"], f["message"])
+        if key in done:
             f["resolved"] = True
+        if key in notes:
+            f["note"] = notes[key]
     return new
 
 
@@ -735,6 +856,7 @@ def review_episode(program_dir, episode_id: str) -> List[dict]:
     if tr_path.is_file():
         out += transcript_findings(Transcript.load(tr_path), p)
     out = _carry_resolved(out, old)
+    attach_hints(base, episode_id, out)
     save_review(ep_dir, out)
     return out
 

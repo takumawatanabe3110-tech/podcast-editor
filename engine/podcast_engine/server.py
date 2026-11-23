@@ -17,7 +17,8 @@
 - DELETE /api/programs/{番組}/episodes/{日付}/job    順番待ちの取り消し（実行中は不可。素材は残す）
 - GET  /api/programs/{番組}/episodes/{日付}/transcript   書き出した音声の時刻に合わせた文字起こし（一覧で聴きながら読む用）
 - GET  /api/jobs                                    実行中と順番待ちの一覧
-- POST/PUT /api/programs/{番組}/episodes/{日付}/review   要確認の作り直し／解決済みにする
+- POST/PUT /api/programs/{番組}/episodes/{日付}/review   要確認の作り直し／解決済み・メモの保存（PUT は {findings, learned} を返す）
+- GET  /api/programs/{番組}/episodes/{日付}/review/handoff   要確認を Claude に渡す文章 {text}
 - POST /api/open {program, episode}, GET /api/current   開くエピソードの切り替え
   以下の /api/project などは、いま開いているエピソードに対して働く
 - GET  /api/presets, GET /api/presets/{名前}   プリセットの一覧・中身
@@ -307,6 +308,7 @@ def build_episode(program_dir: Path, date: str, files: List[Path], progress, log
         ws.preview_audio(p, sid, raw)
 
     findings += auto_export(proj_path, progress, log)
+    library.attach_hints(program_dir, date, findings)
     library.save_review(ep_dir, findings)
     progress(1.0, "できました")
     return proj_path
@@ -826,15 +828,60 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
     @app.put("/api/programs/{prog}/episodes/{eid}/review")
     def put_review(prog: str, eid: str, data: dict = Body(...)):
         d = episode_dir(prog, eid)
-        idx = data.get("resolved")
         findings = library.load_review(d / eid)
-        if not isinstance(idx, list) or not all(isinstance(i, int) and not isinstance(i, bool)
-                                                and 0 <= i < len(findings) for i in idx):
-            raise HTTPException(400, "resolved は要確認の番号（0 から）の配列で指定してください")
-        for i in idx:
-            findings[i]["resolved"] = True
+        n = len(findings)
+
+        def ok_index(i) -> bool:
+            return isinstance(i, int) and not isinstance(i, bool) and 0 <= i < n
+
+        changes = []  # (番号, resolved または None, note または None)
+        if "items" in data:
+            items = data["items"]
+            if not isinstance(items, list):
+                raise HTTPException(400, "items は配列で指定してください")
+            for it in items:
+                if not isinstance(it, dict) or not ok_index(it.get("index")):
+                    raise HTTPException(400, "items の index は要確認の番号（0 から）で指定してください")
+                res, note = it.get("resolved"), it.get("note")
+                if res is not None and not isinstance(res, bool):
+                    raise HTTPException(400, "resolved は true / false で指定してください")
+                if note is not None and (not isinstance(note, str) or len(note) > 2000):
+                    raise HTTPException(400, "note は 2000 文字までの文字列で指定してください")
+                changes.append((it["index"], res, note))
+        else:
+            idx = data.get("resolved")
+            if not isinstance(idx, list) or not all(ok_index(i) for i in idx):
+                raise HTTPException(400, "resolved は要確認の番号（0 から）の配列で指定してください")
+            changes = [(i, True, None) for i in idx]
+        newly = []
+        for i, res, note in changes:
+            f = findings[i]
+            if note is not None:
+                if note.strip():
+                    f["note"] = note
+                else:
+                    f.pop("note", None)
+            if res is not None:
+                if res and not f.get("resolved"):
+                    newly.append(i)
+                if res:
+                    f["resolved"] = True
+                else:
+                    f.pop("resolved", None)
         library.save_review(d / eid, findings)
-        return findings
+        learned = []
+        for i in dict.fromkeys(newly):
+            if not findings[i].get("resolved"):
+                continue  # 同じリクエストで未確認に戻された
+            msg = library.learn_from_review(d, eid, findings[i])
+            if msg:
+                learned.append(msg)
+        return {"findings": findings, "learned": learned}
+
+    @app.get("/api/programs/{prog}/episodes/{eid}/review/handoff")
+    def review_handoff(prog: str, eid: str):
+        d = episode_dir(prog, eid)
+        return {"text": library.review_handoff_text(d, eid)}
 
     @app.middleware("http")
     async def no_stale_page(request, call_next):
