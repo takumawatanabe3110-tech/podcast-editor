@@ -29,7 +29,7 @@ npm run build      # dist/ に書き出し（どこに置いても動く相対�
 3. 「OAuth 同意画面」：User Type は「外部」、アプリ名・メールを入れる。スコープは `.../auth/drive.readonly`。「テストユーザー」に自分の Google アカウント（と聴く人のアカウント）を足す。公開ステータスは「テスト」のままでよい
 4. 「認証情報」→「認証情報を作成」→「OAuth クライアント ID」→ 種類「ウェブ アプリケーション」
    - 承認済みの JavaScript 生成元：ページを置く場所（例 `https://<ユーザー名>.github.io`）と `http://localhost:5175`
-5. できたクライアント ID（`…apps.googleusercontent.com`）を `listen/.env.local` に書く（Git には入れない）
+5. できたクライアント ID（`…apps.googleusercontent.com`）を `listen/.env` に書く（設定済み。手元だけ別の ID で試すときは `.env.local`）
 
 ```
 VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
@@ -39,7 +39,7 @@ VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
 
 ## 公開する場所
 
-`npm run build` でできた `dist/` を、HTTPS で配れる場所に置きます（GitHub Pages など）。置いた場所の URL を手順 4 の「JavaScript 生成元」に足してください。iPhone の Safari で開いて「共有」→「ホーム画面に追加」すると、アプリのように開けます。
+GitHub Pages：https://takumawatanabe3110-tech.github.io/podcast-editor/ 。`listen/deploy.sh` を実行すると、作り直して `gh-pages` ブランチに置きます（リポジトリの Settings → Pages の Source は「Deploy from a branch」・ブランチ `gh-pages`・`/ (root)`）。ほかの場所に置くときは `npm run build` でできた `dist/` を HTTPS で配ります。置いた場所の URL を手順 4 の「JavaScript 生成元」に足してください。iPhone の Safari で開いて「共有」→「ホーム画面に追加」すると、アプリのように開けます。
 
 ## 決めたこと
 
