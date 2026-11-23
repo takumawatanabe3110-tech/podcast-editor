@@ -244,9 +244,28 @@ def _read_mono(path: Path):
         return f.read(f.frames).mean(axis=0), int(f.samplerate)
 
 
+def auto_export(proj_path: Path, progress, log=lambda s: None) -> List[dict]:
+    """できあがった回を、いったん完成版として書き出す（一覧ですぐ聴けるように）。progress は 0.88〜1.0 を使う。
+    番組に「完成版のコピー先」があればそこにも置く。失敗しても例外は出さず、要確認の項目にして返す。"""
+    from .render import scaled
+
+    ws = Workspace(proj_path)
+    out = ws.default_export_path()
+    progress(0.88, "完成版を書き出しています")
+    try:
+        p = ws.load()  # 文字起こしで話の終わりを切ったあとの状態
+        rep = export(p, ws.base, out, scaled(progress, 0.88, 1.0))
+    except Exception as e:
+        log(f"書き出しに失敗しました：{type(e).__name__}: {e}")
+        return [library._finding(
+            "export", f"自動の書き出しに失敗しました（{type(e).__name__}: {e}）。編集画面の「書き出し」でやり直してください")]
+    dl = ws._deliver(out, p, rep.duration)
+    return [library._finding("export", dl["deliver_error"])] if dl.get("deliver_error") else []
+
+
 def build_episode(program_dir: Path, date: str, files: List[Path], progress, log=lambda s: None,
                   names: Optional[List[str]] = None, title: Optional[str] = None) -> Path:
-    """新しいエピソードを作る一連の処理（同期・初期設定・ノイズ除去・話者判定・文字起こし・波形の準備）。
+    """新しいエピソードを作る一連の処理（同期・初期設定・ノイズ除去・話者判定・文字起こし・波形の準備・書き出し）。
     progress(0〜1, 説明)。.podproj のパスを返す。要確認は review.json に保存する。
     names（files と同じ順）を渡すと、声紋での名前付けはせずその名前を使う。"""
     prog = library.load_program(program_dir)
@@ -268,7 +287,7 @@ def build_episode(program_dir: Path, date: str, files: List[Path], progress, log
 
     def on_log(msg: str) -> None:  # 文字起こしは1トラックずつ。始まるたびに進める
         log(msg)
-        progress(0.6 + 0.3 * done[0] / max(1, n_voice), msg)
+        progress(0.6 + 0.22 * done[0] / max(1, n_voice), msg)
         done[0] += 1
 
     progress(0.6, "文字起こしをしています（時間がかかります）")
@@ -276,15 +295,19 @@ def build_episode(program_dir: Path, date: str, files: List[Path], progress, log
     from .transcribe import Transcript
 
     tr = Transcript.load(proj_path.with_suffix(".transcript.json"))
-    library.save_review(ep_dir, findings + library.transcript_findings(tr, Project.load(proj_path)))
+    findings = findings + library.transcript_findings(tr, Project.load(proj_path))
+    library.save_review(ep_dir, findings)
 
     ws = Workspace(proj_path)  # 画面で最初に開くときに待たないよう、波形と試聴用の音を作っておく
     p = ws.load()
     targets = [(sid, False) for sid in p.sources] + [(v.source, True) for v in p.voices if v.denoise]
     for i, (sid, raw) in enumerate(targets):
-        progress(0.9 + 0.1 * i / len(targets), "波形と試聴用の音を準備しています")
+        progress(0.82 + 0.06 * i / len(targets), "波形と試聴用の音を準備しています")
         ws.peaks(p, sid, raw)
         ws.preview_audio(p, sid, raw)
+
+    findings += auto_export(proj_path, progress, log)
+    library.save_review(ep_dir, findings)
     progress(1.0, "できました")
     return proj_path
 

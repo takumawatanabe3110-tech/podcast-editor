@@ -671,3 +671,30 @@ def test_episode_transcript_endpoint_errors(tmp_path):
     assert c.get("/api/programs/番組/episodes/20261204/transcript").status_code == 404  # 文字起こしなし
     assert c.get("/api/programs/番組/episodes/20261205/transcript").status_code == 404  # プロジェクトなし
     assert c.get("/api/programs/番組/episodes/..%2Fx/transcript").status_code in (400, 404)
+
+
+def test_auto_export_writes_finished_mp3(tmp_path):
+    """回ができたら、いったん完成版の MP3 を書き出し、一覧で「書き出し済み」として聴ける"""
+    prog = _transcript_fixture(tmp_path)
+    ep = prog / "20261204"
+    t = np.arange(int(FS * 30)) / FS
+    sf.write(str(ep / "a.wav"), (0.1 * np.sin(2 * np.pi * 220 * t)).astype("float32"), FS, subtype="FLOAT")
+    p = Project.load(ep / "20261204.podproj")
+    p.sync.reference = "voice1"
+    p.save(ep / "20261204.podproj")
+    seen = []
+    assert server.auto_export(ep / "20261204.podproj", lambda f, s: seen.append(f)) == []
+    assert (ep / "20261204.mp3").is_file()
+    assert seen and min(seen) >= 0.88 and max(seen) <= 1.0
+    c = TestClient(create_app(library_root=tmp_path))
+    e = next(x for x in c.get("/api/library").json()["programs"][0]["episodes"] if x["id"] == "20261204")
+    assert e["exported"]
+    assert c.get("/api/programs/番組/episodes/20261204/audio").headers["content-type"] == "audio/mpeg"
+
+
+def test_auto_export_failure_becomes_finding(tmp_path):
+    """書き出しに失敗しても例外にせず、要確認の項目にする（素材がない場合）"""
+    prog = _transcript_fixture(tmp_path)
+    got = server.auto_export(prog / "20261204" / "20261204.podproj", lambda f, s: None)
+    assert [f["kind"] for f in got] == ["export"]
+    assert not (prog / "20261204" / "20261204.mp3").exists()
