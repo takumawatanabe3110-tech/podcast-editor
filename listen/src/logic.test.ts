@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { episodeBadge, fmtTime, groupPrograms, lineAt, nextSpeed, parseEpisode, updateProgress, type ListenEpisode } from './logic'
+import { episodeBadge, fmtTime, groupPrograms, lineAt, nextSpeed, parseEpisode, readReturn, updateProgress, type ListenEpisode } from './logic'
 
 const ep = (over: Partial<ListenEpisode> = {}): ListenEpisode => ({
   format: 'podlisten', version: 1, program: '岡田山ラジオ', episode: '20261204', date: '2026-12-04',
@@ -75,5 +75,24 @@ describe('小物', () => {
     expect(episodeBadge({ pos: 0, done: false }, true)).toBe('playing')
     expect(episodeBadge({ pos: 50, done: false }, false)).toBe('partial')
     expect(episodeBadge({ pos: 0, done: true }, false)).toBe('done')
+  })
+})
+
+describe('readReturn（Google から戻ったとき）', () => {
+  it('印が合えば鍵と期限を返す', () => {
+    expect(readReturn('#access_token=abc&expires_in=3599&state=s1&token_type=Bearer', 's1', 1000))
+      .toEqual({ saved: { token: 'abc', exp: 1000 + 3599_000 } })
+  })
+  it('印が違う・無いときは受け取らない', () => {
+    expect(readReturn('#access_token=abc&state=x', 's1')?.error).toMatch(/やり直/)
+    expect(readReturn('#access_token=abc&state=s1', null)?.error).toMatch(/やり直/)
+  })
+  it('取りやめ・エラーを日本語にする', () => {
+    expect(readReturn('#error=access_denied&state=s1', 's1')?.error).toBe('ログインを取りやめました')
+    expect(readReturn('#error=invalid_scope&state=s1', 's1')?.error).toContain('invalid_scope')
+  })
+  it('関係のないハッシュは無視する', () => {
+    expect(readReturn('', 's1')).toBeNull()
+    expect(readReturn('#top', 's1')).toBeNull()
   })
 })

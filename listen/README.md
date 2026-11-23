@@ -29,6 +29,7 @@ npm run build      # dist/ に書き出し（どこに置いても動く相対�
 3. 「OAuth 同意画面」：User Type は「外部」、アプリ名・メールを入れる。スコープは `.../auth/drive.readonly`。「テストユーザー」に自分の Google アカウント（と聴く人のアカウント）を足す。公開ステータスは「テスト」のままでよい
 4. 「認証情報」→「認証情報を作成」→「OAuth クライアント ID」→ 種類「ウェブ アプリケーション」
    - 承認済みの JavaScript 生成元：ページを置く場所（例 `https://<ユーザー名>.github.io`）と `http://localhost:5175`
+   - 承認済みのリダイレクト URI：ページのアドレスそのもの（例 `https://<ユーザー名>.github.io/podcast-editor/`）と `http://localhost:5175/`（末尾の / まで同じに）
 5. できたクライアント ID（`…apps.googleusercontent.com`）を `listen/.env` に書く（設定済み。手元だけ別の ID で試すときは `.env.local`）
 
 ```
@@ -44,5 +45,6 @@ GitHub Pages：https://takumawatanabe3110-tech.github.io/podcast-editor/ 。`lis
 ## 決めたこと
 
 - Drive は読み取り専用（`drive.readonly`）。ファイルを書き換えたり消したりしない
-- ログインの鍵は 1 時間で切れる。切れたらログイン画面に戻る（iPhone では押したその場でしかログインの窓を開けないため、自動ではやり直さない）
+- ログインはページごと Google の画面へ移って戻ってくる方式（小窓（ポップアップ）方式は iPhone の Safari やホーム画面から開いたときに「リクエストの形式が正しくない」で失敗したため）
+- ログインの鍵は 1 時間で切れる。切れたらログイン画面に戻る（自動ではやり直さない）
 - 音声は一度に全部読み込んでから鳴らす（1 回 20MB 前後。読み込み中は進み具合を出す）

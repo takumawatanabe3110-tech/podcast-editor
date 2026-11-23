@@ -14,7 +14,7 @@ type Screen = 'login' | 'list' | 'player'
 const st = {
   screen: (DEMO || auth.token() ? 'list' : 'login') as Screen,
   loading: false,
-  error: '',
+  error: auth.returnError,
   entries: [] as Entry[],
   programs: [] as Program[],
   prog: 0, // 選んでいる番組
@@ -170,11 +170,7 @@ function loginView() {
     h('div', { class: 'loginfoot' },
       h('button', {
         type: 'button', class: 'primary', disabled: !ready || st.signingIn,
-        onClick: async () => {
-          st.signingIn = true; st.error = ''; render()
-          try { await auth.signIn(CLIENT_ID); st.screen = 'list'; st.signingIn = false; await loadList() }
-          catch (e) { st.signingIn = false; st.error = e instanceof Error ? e.message : String(e); render() }
-        },
+        onClick: () => { st.signingIn = true; st.error = ''; render(); auth.signIn(CLIENT_ID) },
       }, svg(I.google, 20), st.signingIn ? 'ログイン中…' : 'Google でログイン'),
       st.error && h('p', { class: 'err', role: 'alert' }, st.error),
       !ready && h('p', { class: 'err' }, 'Google の設定（クライアント ID）がまだです。設定の手順は listen/README.md にあります'),
@@ -341,6 +337,7 @@ window.addEventListener('pagehide', saveProgress)
 
 // ---------------------------------------------------------------- 始める
 
-void auth.prepare(CLIENT_ID)
+// Safari の「戻る」でログイン画面から戻ったとき、「ログイン中…」のままにしない
+window.addEventListener('pageshow', e => { if (e.persisted && st.signingIn) { st.signingIn = false; render() } })
 render()
 if (st.screen === 'list') void loadList()

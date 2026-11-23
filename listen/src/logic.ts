@@ -103,3 +103,18 @@ export function episodeBadge(p: Progress | undefined, playing: boolean): 'playin
 }
 
 export const episodeKey = (e: Pick<ListenEpisode, 'program' | 'episode'>) => `${e.program}/${e.episode}`
+
+// ---------------------------------------------------------------- ログインから戻ったとき
+
+export interface Saved { token: string; exp: number }
+
+/** Google から戻ってきたときの #access_token=… を読む。失敗の理由があれば返す */
+export function readReturn(hash: string, expectState: string | null, now = Date.now()): { saved?: Saved; error?: string } | null {
+  const p = new URLSearchParams(hash.replace(/^#/, ''))
+  if (!p.has('access_token') && !p.has('error')) return null
+  if (!expectState || p.get('state') !== expectState) return { error: 'ログインをやり直してください（確認の印が合いませんでした）' }
+  const err = p.get('error')
+  if (err) return { error: err === 'access_denied' ? 'ログインを取りやめました' : `ログインできませんでした（${err}）` }
+  const exp = now + Number(p.get('expires_in') || 3600) * 1000
+  return { saved: { token: p.get('access_token')!, exp } }
+}
