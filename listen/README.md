@@ -39,7 +39,7 @@ VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
 
 ## 公開する場所
 
-GitHub Pages：https://takumawatanabe3110-tech.github.io/podcast-editor/ 。`listen/deploy.sh` を実行すると、作り直して `gh-pages` ブランチに置きます（リポジトリの Settings → Pages の Source は「Deploy from a branch」・ブランチ `gh-pages`・`/ (root)`）。ほかの場所に置くときは `npm run build` でできた `dist/` を HTTPS で配ります。置いた場所の URL を手順 4 の「JavaScript 生成元」に足してください。iPhone の Safari で開いて「共有」→「ホーム画面に追加」すると、アプリのように開けます。
+GitHub Pages：https://takumawatanabe3110-tech.github.io/podcast-editor/ 。`listen/` を変えて main にプッシュすると、`.github/workflows/listen-pages.yml` が作り直して置きます（Settings → Pages の Source は「GitHub Actions」。プッシュに使うトークンには Workflows の読み書きの権限が要る）。ほかの場所に置くときは `npm run build` でできた `dist/` を HTTPS で配ります。置いた場所の URL を手順 4 の「JavaScript 生成元」に足してください。iPhone の Safari で開いて「共有」→「ホーム画面に追加」すると、アプリのように開けます。
 
 ## 決めたこと
 
