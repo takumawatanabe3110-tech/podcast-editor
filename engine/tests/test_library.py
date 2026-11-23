@@ -794,3 +794,69 @@ def test_auto_export_failure_becomes_finding(tmp_path):
     got = server.auto_export(prog / "20261204" / "20261204.podproj", lambda f, s: None)
     assert [f["kind"] for f in got] == ["export"]
     assert not (prog / "20261204" / "20261204.mp3").exists()
+
+
+def test_learn_from_old_weak_match_without_fields(tmp_path, monkeypatch):
+    """name / source のない古い review.json の弱い一致でも、文とプロジェクトから声紋を強める"""
+    d, ed = _review_env(tmp_path, [])
+    Project(sample_rate=FS, sources={"voice2": Source("素材/261218_2.wav")}, voices=[Voice("voice2", "青木さん")]).save(ed / "20261204.podproj")
+    old = {"kind": "weak_match", "message": "青木さん（261218_2.wav） は 青木さん と判定しましたが点数が低めです（0.92）。別の人でないか確認してください", "time": None}
+    assert library._weak_match_target(d, "20261204", old) == ("青木さん", "voice2")
+    got = []
+    monkeypatch.setattr(library, "_track_embedding_for", lambda b, e, s, **k: (got.append(s), (np.array([0, 1, 0, 0], dtype=np.float32), 30.0))[1])
+    assert library.learn_from_review(d, "20261204", old) == "青木さんの声紋に 12/4 の声を足しました（2 回分）"
+    assert got == ["voice2"]
+    # 埋め込みに失敗したら、そのことを伝える
+    monkeypatch.setattr(library, "_track_embedding_for", lambda *a, **k: (_ for _ in ()).throw(OSError("音がない")))
+    assert "強められませんでした" in library.learn_from_review(d, "20261204", old)
+
+
+def _clap_project(tmp_path, claps, dur=40.0):
+    """2人分の声トラック（小さな雑音）に、claps（秒）の位置で同時に手をたたいた音を入れる。"""
+    rng = np.random.default_rng(0)
+    n = int(dur * FS)
+    paths = {}
+    for i, sid in enumerate(("v1", "v2")):
+        x = (0.001 * rng.standard_normal(n)).astype(np.float32)
+        for c in claps:
+            a = int(c * FS)
+            burst = rng.standard_normal(int(0.03 * FS)) * np.exp(-np.arange(int(0.03 * FS)) / (0.004 * FS))
+            x[a:a + len(burst)] += (0.6 * burst).astype(np.float32)
+        f = tmp_path / f"{sid}.wav"
+        sf.write(str(f), x, FS, subtype="FLOAT")
+        paths[sid] = f.name
+    p = Project(sample_rate=FS, sources={s: Source(f) for s, f in paths.items()},
+                voices=[Voice("v1", "青木さん"), Voice("v2", "内田さん")], edit=Edit(segments=[Segment(1.0, dur)]))
+    p.sync.reference = "v1"
+    return p
+
+
+def test_end_clap_single_and_double_are_edit_points(tmp_path):
+    p = _clap_project(tmp_path, [5.0, 30.0])
+    assert abs(library.find_end_clap(p, tmp_path) - 5.0) < 0.02  # いちばん早いもの
+    p = _clap_project(tmp_path, [30.0, 30.35])  # パンパン（2回）も編集点
+    assert abs(library.find_end_clap(p, tmp_path) - 30.0) < 0.02
+    assert library.trim_at_end_clap(p, tmp_path)[1] == pytest.approx(30.0 - library.END_CLAP_BEFORE_SEC, abs=0.02)
+    assert p.edit.segments[-1].end == pytest.approx(29.7, abs=0.02)
+
+
+def test_end_clap_ignores_applause_and_claps_in_speech(tmp_path):
+    p = _clap_project(tmp_path, [30.0, 30.4, 30.8, 31.2, 31.6])  # 拍手喝采
+    assert library.find_end_clap(p, tmp_path) is None
+    p = _clap_project(tmp_path, [30.0])
+    tr = Transcript("m", "ja", [Utterance("v1", "v1", 28.0, 33.0, "話の途中", "話の途中")])
+    assert library.find_end_clap(p, tmp_path, tr) is None
+    assert library.find_end_clap(_clap_project(tmp_path, []), tmp_path) is None
+
+
+def test_server_remembers_open_episode_across_restart(tmp_path):
+    """サーバーを起動し直しても、前に開いていた回を開いたままにする（画面の保存・書き出しが続けられる）"""
+    _transcript_fixture(tmp_path)
+    c = TestClient(create_app(library_root=tmp_path))
+    assert c.get("/api/current").json() is None
+    assert c.post("/api/open", json={"program": "番組", "episode": "20261204"}).status_code == 200
+    c2 = TestClient(create_app(library_root=tmp_path))  # 起動し直し
+    assert c2.get("/api/current").json() == {"program": "番組", "episode": "20261204"}
+    assert c2.get("/api/project").status_code == 200
+    (tmp_path / ".podcast-editor-current.json").write_text('{"program": "../x", "episode": "1"}', encoding="utf-8")
+    assert TestClient(create_app(library_root=tmp_path)).get("/api/current").json() is None

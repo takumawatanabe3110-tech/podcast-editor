@@ -35,6 +35,7 @@ export default function App({ current, onShowList, player: given, active = true,
   onReady?: () => void
 } = {}) {
   const player = useMemo(() => given ?? new Player(), [given])
+  useEffect(() => { api.setOpened(current ?? null) }, [current])
   const onReadyRef = useRef(onReady)
   onReadyRef.current = onReady
   const [name, setName] = useState('')

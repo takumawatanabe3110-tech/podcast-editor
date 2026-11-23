@@ -9,46 +9,63 @@ async function json<T>(r: Response): Promise<T> {
   return r.json() as Promise<T>
 }
 
-export const getProject = () => fetch('/api/project').then(r => json<ProjectResponse>(r))
+// ---- 開いている回
+// サーバーを起動し直すと、サーバーは開いていた回を忘れることがある。そのときは画面が開いている回を
+// 開き直してから、もう一度送る（保存・書き出しが「エピソードを開いていません」で失敗しないように）
+let opened: { program: string; episode: string } | null = null
+export const setOpened = (c: { program: string; episode: string } | null) => { opened = c?.program && c.episode ? c : null }
+
+const NOT_OPEN = '開いていません'
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const r = await fetch(url, init)
+  if (r.status !== 404 || !opened) return r
+  let detail = ''
+  try { detail = String((await r.clone().json()).detail ?? '') } catch { /* 本文が JSON でない */ }
+  if (!detail.includes(NOT_OPEN)) return r
+  const o = await fetch('/api/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opened) })
+  return o.ok ? fetch(url, init) : r
+}
+
+export const getProject = () => apiFetch('/api/project').then(r => json<ProjectResponse>(r))
 
 export const putProject = (p: Project) =>
-  fetch('/api/project', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) })
+  apiFetch('/api/project', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) })
     .then(r => json<ProjectResponse>(r))
 
 /** 文字起こしがまだなければ null */
 export async function getTranscript(): Promise<Transcript | null> {
-  const r = await fetch('/api/transcript')
+  const r = await apiFetch('/api/transcript')
   if (r.status === 404) return null
   return json<Transcript>(r)
 }
 
 export const putTranscript = (t: Transcript) =>
-  fetch('/api/transcript', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t) })
+  apiFetch('/api/transcript', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t) })
     .then(r => json<Transcript>(r))
 
-export const getPeaks = (sid: string) => fetch(`/api/peaks/${encodeURIComponent(sid)}`).then(r => json<Peaks>(r))
+export const getPeaks = (sid: string) => apiFetch(`/api/peaks/${encodeURIComponent(sid)}`).then(r => json<Peaks>(r))
 
 /** 試聴用の音。raw＝ノイズ除去をかける前の音 */
 export const getAudio = (sid: string, raw = false) =>
-  fetch(`/api/audio/${encodeURIComponent(sid)}${raw ? '?raw=1' : ''}`).then(r => {
+  apiFetch(`/api/audio/${encodeURIComponent(sid)}${raw ? '?raw=1' : ''}`).then(r => {
     if (!r.ok) throw new Error(`音声 ${sid} を読めません（${r.status}）`)
     return r.arrayBuffer()
   })
 
 export const startExport = () =>
-  fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => json<{ state: string; path: string }>(r))
+  apiFetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => json<{ state: string; path: string }>(r))
 
-export const getExport = () => fetch('/api/export').then(r => json<import('./Mixer').ExportStatus>(r))
+export const getExport = () => apiFetch('/api/export').then(r => json<import('./Mixer').ExportStatus>(r))
 
 // ---- いつもの設定（プリセット）
 export type Preset = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
-export const listPresets = () => fetch('/api/presets').then(r => json<{ name: string; description?: string }[]>(r))
-export const getPreset = (name: string) => fetch(`/api/presets/${encodeURIComponent(name)}`).then(r => json<Preset>(r))
+export const listPresets = () => apiFetch('/api/presets').then(r => json<{ name: string; description?: string }[]>(r))
+export const getPreset = (name: string) => apiFetch(`/api/presets/${encodeURIComponent(name)}`).then(r => json<Preset>(r))
 /** プロジェクト（保存済みのもの）の BGM の置き方を、プリセットに書き込む */
 export const savePresetBgm = (name: string, source: string) =>
-  fetch(`/api/presets/${encodeURIComponent(name)}/bgm/${encodeURIComponent(source)}`, { method: 'PUT' }).then(r => json<{ entry: unknown }>(r))
+  apiFetch(`/api/presets/${encodeURIComponent(name)}/bgm/${encodeURIComponent(source)}`, { method: 'PUT' }).then(r => json<{ entry: unknown }>(r))
 /** トラックのエフェクトをプリセットに書き込む。track は "voice:0" / "bgm" / "master" */
 export const savePresetEffects = (name: string, track: string, effects: unknown[]) =>
-  fetch(`/api/presets/${encodeURIComponent(name)}/effects/${encodeURIComponent(track)}`, {
+  apiFetch(`/api/presets/${encodeURIComponent(name)}/effects/${encodeURIComponent(track)}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ effects }),
   }).then(r => json<unknown>(r))

@@ -16,7 +16,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -535,6 +535,96 @@ def create_episode(
     return {"project": p, "notes": notes, "assigned": assigned, "sync": r, "embs": embs}
 
 
+# ---------------------------------------------------------------- 終わりの拍手（編集点）
+
+END_CLAP_WINDOW_SEC = 300.0  # 収録の最後のこの範囲で探す
+END_CLAP_MIN_RISE_DB = 45.0  # 編集点用の拍手：全員のマイクで鋭く立ち上がる（実測 44〜78 dB。話し声の子音は 15〜25 dB）
+END_CLAP_BEFORE_SEC = 0.3  # 拍手のこれだけ前で切る
+APPLAUSE_SPAN_SEC = 1.5  # この範囲に強い立ち上がりが3つ以上あれば、ふつうの拍手（何度も手をたたく）とみなす
+
+
+def find_end_clap(p: Project, base, tr=None, window_sec: float = END_CLAP_WINDOW_SEC) -> Optional[float]:
+    """収録の終わりの、編集点用の拍手（基準時刻・秒）。なければ None。
+
+    編集点用の拍手と、ふつうの拍手（拍手喝采）・話し声を、次の決まりで見分ける：
+    - 全員のマイク（2本以上なら 2/3 以上）に、50ms 以内のずれで同時に入っている
+    - 立ち上がりが鋭い（トラックの中央値で END_CLAP_MIN_RISE_DB 以上）
+    - 1回か2回だけ：前後 APPLAUSE_SPAN_SEC に強い立ち上がりが合わせて3つ以上あれば、ふつうの拍手として除く
+    - 発言の途中ではない（文字起こしがあれば、発言の中に 0.3 秒以上入り込んでいたら除く）
+    見つかったうちいちばん早いもの（その後ろは要らない部分なので）を返す。
+    """
+    from .sync import detect_transients
+
+    base = Path(base)
+    hits: Dict[str, List[tuple]] = {}
+    audio = {}
+    for v in p.voices:
+        audio[v.source] = audio_io.read(p.source_path(v.source, base), mono=True, dtype="float32")
+        hits[v.source] = []
+    if not audio:
+        return None
+
+    def kof(sid):
+        off = p.sync.offset(sid)
+        return off, 1 + off.drift_ppm * 1e-6
+
+    r1 = min((len(x) / fs - kof(s)[0].offset_sec) / kof(s)[1] for s, (x, fs) in audio.items())
+    r0 = max(0.0, r1 - window_sec)
+    for v in p.voices:
+        off, k = kof(v.source)
+        x, fs = audio[v.source]
+        f0 = max(0.0, r0 * k + off.offset_sec)
+        seg = x[int(f0 * fs):]
+        for t in detect_transients(seg, fs, min_rise_db=30.0, min_level_db=-40.0, max_candidates=400):
+            hits[v.source].append((((f0 + t.time) - off.offset_sec) / k, t.rise_db))
+    srcs = [s for s in hits if hits[s]]
+    if len(srcs) < max(1, len(hits) * 2 / 3):
+        return None
+    need = len(hits) if len(hits) <= 2 else int(np.ceil(len(hits) * 2 / 3))
+    strong = sorted(t for s in hits for t, rise in hits[s] if rise >= END_CLAP_MIN_RISE_DB)
+
+    cands = []
+    for t, _ in sorted(set(x for s in srcs for x in hits[s])):
+        rises = []
+        for s in hits:
+            near = [rise for u, rise in hits[s] if abs(u - t) <= 0.05]
+            if near:
+                rises.append(max(near))
+        if len(rises) < need or float(np.median(rises)) < END_CLAP_MIN_RISE_DB:
+            continue
+        if cands and t - cands[-1] < 0.15:  # 同じ拍手を別のトラックから拾い直したもの
+            continue
+        cands.append(t)
+    utts = tr.utterances if tr is not None else []
+    for t in cands:
+        # 強い立ち上がりを、同じ拍手（50ms 以内）はまとめて数える
+        group: List[float] = []
+        for u in strong:
+            if abs(u - t) <= APPLAUSE_SPAN_SEC and not any(abs(u - g) <= 0.05 for g in group):
+                group.append(u)
+        if len(group) >= 3:
+            continue
+        if any(u.start + 0.3 < t < u.end - 0.3 for u in utts):
+            continue
+        return round(float(t), 3)
+    return None
+
+
+def trim_at_end_clap(p: Project, base, tr=None, before: float = END_CLAP_BEFORE_SEC) -> Optional[tuple]:
+    """編集点用の拍手が終わりにあれば、その直前で最後の区間を切る。(拍手の時刻, 切った後の終わり) を返す。"""
+    if not p.edit.segments:
+        return None
+    clap = find_end_clap(p, base, tr)
+    if clap is None:
+        return None
+    last = p.edit.segments[-1]
+    new_end = round(clap - before, 3)
+    if not (last.start < new_end < last.end):
+        return None
+    last.end = new_end
+    return clap, new_end
+
+
 def transcribe_and_save(proj_path, trim_end: Optional[float] = None,
                         log: Callable[[str], None] = lambda s: None) -> dict:
     """文字起こしして .transcript.json / .txt を保存し、話の終わりで最後の区間を切る。cmd_transcribe と共用。"""
@@ -548,9 +638,14 @@ def transcribe_and_save(proj_path, trim_end: Optional[float] = None,
     Path(f"{stem}.transcript.txt").write_text(tr.script_text(), encoding="utf-8")
     log(f"{stem}.transcript.json / .txt を作りました（発言 {len(tr.utterances)}）")
 
+    trimmed = None
+    clap = trim_at_end_clap(p, proj.resolve().parent, tr)
+    if clap is not None:  # 終わりの拍手（編集点）があれば、話の終わりより優先してその直前で切る
+        p.save(proj)
+        log(f"終わりの拍手（基準時刻 {clap[0]:.2f} 秒）の {END_CLAP_BEFORE_SEC} 秒前で切りました")
+        return {"utterances": len(tr.utterances), "trimmed": None, "end_clap": clap[0]}
     pad = trim_end if trim_end is not None else p.edit.end_after_speech_sec
     end = tr.speech_end
-    trimmed = None
     if pad is not None and end is not None and p.edit.segments:
         last = p.edit.segments[-1]
         new_end = round(end + pad, 3)
@@ -706,6 +801,12 @@ def imbalance_findings(tr, p: Project) -> List[dict]:
 
 def transcript_findings(tr, p: Project) -> List[dict]:
     out = []
+    if p.edit.segments:  # 切り落とした後ろの発言（終わりの拍手で切ったあとの雑談など）は見ない
+        import copy
+
+        end = p.edit.segments[-1].end
+        tr = copy.copy(tr)
+        tr.utterances = [u for u in tr.utterances if u.start < end]
     f = tail_chatter_finding(tr)
     if f:
         out.append(f)
@@ -750,6 +851,24 @@ def attach_hints(program_dir, eid: str, findings: List[dict]) -> List[dict]:
     return findings
 
 
+_WEAK_RE = re.compile(r"^.*?（(?P<file>[^（）]+)） は (?P<name>.+?) と判定")
+
+
+def _weak_match_target(base: Path, eid: str, finding: dict) -> Tuple[Optional[str], Optional[str]]:
+    """弱い一致の指摘が指す（メンバー名, 素材ID）。項目に name / source がない古い review.json は、
+    文（「◯◯（ファイル名） は ◯◯ と判定…」）とプロジェクトの素材のファイル名から求める。"""
+    name, source = finding.get("name"), finding.get("source")
+    if name and source:
+        return name, source
+    m = _WEAK_RE.match(str(finding.get("message", "")))
+    pp = episode_project_path(base / eid)
+    if not m or pp is None:
+        return name, source
+    p = Project.load(pp)
+    sid = next((k for k, src in p.sources.items() if Path(src.path).name == m["file"]), None)
+    return name or m["name"], source or sid
+
+
 def learn_from_review(program_dir, eid: str, finding: dict) -> Optional[str]:
     """指摘を確認済みにしたときの学習。ログに1行足し、声紋が弱い一致ならその声を声紋に足す。
     足したときだけ日本語のメッセージを返す。"""
@@ -765,8 +884,10 @@ def learn_from_review(program_dir, eid: str, finding: dict) -> Optional[str]:
     with open(base / REVIEW_LOG, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    name, source = finding.get("name"), finding.get("source")
-    if finding.get("kind") != "weak_match" or not name or not source:
+    if finding.get("kind") != "weak_match":
+        return None
+    name, source = _weak_match_target(base, eid, finding)
+    if not name or not source:
         return None
     try:
         member = next((m for m in load_program(base)["members"] if m["name"] == name), None)
@@ -783,8 +904,8 @@ def learn_from_review(program_dir, eid: str, finding: dict) -> Optional[str]:
         meta.update({"count": n + 1, "episodes": eps,
                      "seconds": round(float(meta.get("seconds", 0)) + float(seconds), 1)})
         voiceprint.save_print(f, voiceprint._unit(np.asarray(old, dtype=np.float64) * n + emb), meta)
-    except Exception:
-        return None
+    except Exception as e:
+        return f"{name}の声紋を強められませんでした（{type(e).__name__}: {e}）"
     day = f"{int(eid[4:6])}/{int(eid[6:8])}" if DATE_RE.match(eid) else eid
     return f"{name}の声紋に {day} の声を足しました（{n + 1} 回分）"
 
@@ -840,7 +961,7 @@ def review_episode(program_dir, episode_id: str) -> List[dict]:
         raise FileNotFoundError(f"エピソード {episode_id} のプロジェクトがありません")
     p = Project.load(proj_path)
     old = load_review(ep_dir)
-    keep = {"no_clap", "sync_warning"}
+    keep = {"no_clap", "sync_warning", "end_clap"}
     out = [f for f in old if f.get("kind") in keep]
     for sid, t in p.sync.tracks.items():
         if abs(t.drift_ppm) > DRIFT_NOTICE_PPM:

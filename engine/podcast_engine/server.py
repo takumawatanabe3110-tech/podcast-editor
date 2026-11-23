@@ -292,11 +292,16 @@ def build_episode(program_dir: Path, date: str, files: List[Path], progress, log
         done[0] += 1
 
     progress(0.6, "文字起こしをしています（時間がかかります）")
-    library.transcribe_and_save(proj_path, log=on_log)
+    tres = library.transcribe_and_save(proj_path, log=on_log)
     from .transcribe import Transcript
 
     tr = Transcript.load(proj_path.with_suffix(".transcript.json"))
     findings = findings + library.transcript_findings(tr, Project.load(proj_path))
+    if tres.get("end_clap") is not None:  # 終わりの拍手で切った：位置が合っているかを聴いて確かめてもらう
+        out_end = Project.load(proj_path).edit.output_end
+        findings.append(library._finding(
+            "end_clap", f"終わりの拍手（収録の {library._mmss(tres['end_clap'])}）の直前で切りました。"
+                        "切る位置が合っているか、終わりを聴いて確認してください", out_end))
     library.save_review(ep_dir, findings)
 
     ws = Workspace(proj_path)  # 画面で最初に開くときに待たないよう、波形と試聴用の音を作っておく
@@ -348,8 +353,30 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
         else:
             cur["program"] = cur["episode"] = None
 
+    # 開いている回を覚えておく（サーバーを起動し直しても、画面が開いたままの回で保存・書き出しを続けられるように）
+    current_file = root / ".podcast-editor-current.json"
+
+    def remember_current() -> None:
+        try:
+            current_file.write_text(json.dumps({"program": cur["program"], "episode": cur["episode"]}, ensure_ascii=False),
+                                    encoding="utf-8")
+        except OSError:
+            pass  # 覚えられなくても動作は続ける
+
     if project_path:
         open_ws(Path(project_path))
+    else:
+        try:
+            last = json.loads(current_file.read_text(encoding="utf-8"))
+            d = root / str(last.get("program") or "")
+            eid = str(last.get("episode") or "")
+            library.check_name(d.name, "番組")
+            library.check_name(eid, "エピソード")
+            pp = library.episode_project_path(d / eid) if (d / library.PROGRAM_FILE).is_file() else None
+            if pp is not None:
+                open_ws(pp)
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass  # 前に開いていた回がない・消えた
 
     def project_or_404(sid: Optional[str] = None) -> Project:
         p = W().load()
@@ -602,6 +629,7 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
             raise HTTPException(404, f"エピソード {eid!r} のプロジェクトがありません")
         open_ws(proj)
         cur["program"], cur["episode"] = d.name, eid
+        remember_current()
         return {"program": d.name, "episode": eid}
 
     @app.get("/api/current")
