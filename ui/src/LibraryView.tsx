@@ -454,10 +454,10 @@ function AddProgram({ onClose, onCreated }: { onClose: () => void; onCreated: (i
 // ---------------------------------------------------------------- 番組の設定・BGM と声紋
 
 function Settings({ prog, part, onSaved, onBack }: { prog: lib.ProgramEntry; part: 'media' | 'settings'; onSaved: () => void; onBack: () => void }) {
-  const [draft, setDraft] = useState<lib.Program>(() => ({ name: prog.name, preset: prog.preset, bgm: prog.bgm ?? {}, members: prog.members ?? [], format: prog.format, version: prog.version }))
+  const [draft, setDraft] = useState<lib.Program>(() => ({ name: prog.name, preset: prog.preset, deliver_dir: prog.deliver_dir, bgm: prog.bgm ?? {}, members: prog.members ?? [], format: prog.format, version: prog.version }))
   const [presets, setPresets] = useState<string[]>([])
   const [msg, setMsg] = useState('')
-  useEffect(() => { setDraft({ name: prog.name, preset: prog.preset, bgm: prog.bgm ?? {}, members: prog.members ?? [], format: prog.format, version: prog.version }) }, [prog])
+  useEffect(() => { setDraft({ name: prog.name, preset: prog.preset, deliver_dir: prog.deliver_dir, bgm: prog.bgm ?? {}, members: prog.members ?? [], format: prog.format, version: prog.version }) }, [prog])
   useEffect(() => { listPresets().then(l => setPresets(l.map(x => x.name)), () => {}) }, [])
   const save = async () => {
     try { await lib.saveProgram(prog.id, draft); setMsg('保存しました'); onSaved() } catch (e) { setMsg(`保存できませんでした：${(e as Error).message}`) }
@@ -475,6 +475,9 @@ function Settings({ prog, part, onSaved, onBack }: { prog: lib.ProgramEntry; par
               <option value="">なし</option>
               {presets.map(n => <option key={n} value={n}>{n}</option>)}
             </select></label>
+          <label className="lib-field"><span>完成版のコピー先フォルダ</span>
+            <input value={draft.deliver_dir ?? ''} placeholder="~/Library/CloudStorage/GoogleDrive-…/マイドライブ/岡田山ラジオ 完成版" onChange={e => setDraft({ ...draft, deliver_dir: e.target.value || null })} /></label>
+          <span className="lib-muted">書き出すたびに MP3 と文字起こしをここへコピー（Google Drive のフォルダなど）。空なら使わない</span>
         </section>
       )}
       {part === 'media' && (

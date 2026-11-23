@@ -135,15 +135,30 @@ class Workspace:
                         self._export["progress"] = max(self._export.get("progress", 0.0), frac)
                         self._export["stage"] = stage
 
-            rep = export(self.load(), self.base, out, on_progress)  # 開始時にディスクから読む
+            proj = self.load()  # 開始時にディスクから読む
+            rep = export(proj, self.base, out, on_progress)
             res = {
                 "state": "done", "path": str(out), "elapsed": time.time() - started,
                 "report": {k: _num(v) for k, v in dataclasses.asdict(rep).items()},
             }
+            res.update(self._deliver(out, proj, rep.duration))
         except Exception as e:  # 失敗は状況に入れて画面に見せる
             res = {"state": "error", "path": str(out), "message": f"書き出しに失敗しました：{type(e).__name__}: {e}"}
         with self._export_lock:
             self._export = res
+
+    def _deliver(self, out: Path, proj: Project, duration: float) -> dict:
+        """番組に「完成版のコピー先」があれば、MP3 と .listen.json を置く。失敗しても書き出しは成功のまま。"""
+        if out.suffix.lower() != ".mp3":
+            return {}
+        d = self.base
+        if not (library.DATE_RE.match(d.name) and (d.parent / library.PROGRAM_FILE).is_file()):
+            return {}  # ライブラリの外の .podproj
+        try:
+            dest = library.deliver_episode(d.parent, d.name, out, proj, duration, self.transcript_path())
+        except Exception as e:
+            return {"deliver_error": f"完成版フォルダへコピーできませんでした：{type(e).__name__}: {e}"}
+        return {"delivered": str(dest)} if dest else {}
 
     def export_status(self) -> dict:
         with self._export_lock:
@@ -461,7 +476,7 @@ def create_app(project_path: str | Path | None = None, library_root: str | Path 
         prog = library.load_program(d)
         return {
             "id": d.name, "name": prog.get("name", d.name), "preset": prog.get("preset"),
-            "episodes": episodes_with_jobs(d), "members": library.member_summary(prog, d),
+            "deliver_dir": prog.get("deliver_dir"), "episodes": episodes_with_jobs(d), "members": library.member_summary(prog, d),
             "bgm": prog.get("bgm", {}),
         }
 

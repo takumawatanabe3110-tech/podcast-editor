@@ -7,6 +7,7 @@ export interface ExportStatus {
   state: 'idle' | 'running' | 'done' | 'error'
   progress?: number; stage?: string; remaining?: number | null
   path?: string; elapsed?: number; message?: string
+  delivered?: string; deliver_error?: string
   report?: { duration: number; peak_dbfs: number; clipped: boolean; loudness_before_lufs: number | null; loudness_lufs: number | null; true_peak_dbtp: number | null }
 }
 
@@ -79,6 +80,8 @@ function ExportResult({ s }: { s: ExportStatus }) {
     <div className="done">
       <div className="chip" title={s.path}>書き出しました（{Math.round(s.elapsed ?? 0)}秒）</div>
       <div className="hint" style={{ wordBreak: 'break-all' }}>{s.path?.split('/').pop()}</div>
+      {s.delivered && <div className="hint" title={s.delivered}>完成版フォルダにもコピーしました</div>}
+      {s.deliver_error && <div className="error">{s.deliver_error}</div>}
       <div className="grid2">
         <span>長さ</span><span>{Math.floor(r.duration / 60)}分{(r.duration % 60).toFixed(1)}秒</span>
         {r.loudness_lufs != null && <><span>ラウドネス</span><span>{r.loudness_before_lufs?.toFixed(1)} → <b>{r.loudness_lufs.toFixed(2)} LUFS</b></span></>}

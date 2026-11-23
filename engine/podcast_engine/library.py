@@ -63,6 +63,8 @@ def validate_program(data: dict, program_dir: Path) -> dict:
         raise ValueError("name（番組名）が必要です")
     if data.get("preset") is not None and not isinstance(data["preset"], str):
         raise ValueError("preset は文字列で書いてください")
+    if data.get("deliver_dir") is not None and not isinstance(data["deliver_dir"], str):
+        raise ValueError("deliver_dir（完成版のコピー先）は文字列で書いてください")
     bgm = data.get("bgm", {})
     if not isinstance(bgm, dict):
         raise ValueError("bgm は {役割: パス} で書いてください")
@@ -184,11 +186,12 @@ def episode_project_path(episode_dir) -> Optional[Path]:
     return others[0] if others else None
 
 
-def episode_transcript_lines(proj: Project, tr) -> List[dict]:
+def episode_transcript_lines(proj: Project, tr, prefer_script: bool = False) -> List[dict]:
     """文字起こしを、書き出した音声の時刻（出力時刻）の発言リストにする。
 
     カットされた区間に丸ごと入る発言は捨て、一部だけ入るものは区間の内側に切り詰める。
     話者名はプロジェクトの声の名前（なければ文字起こしの話者名）。
+    prefer_script なら、編集画面に出る台本（script）を使い、空の発言は捨てる。
     """
     names = {v.source: v.name for v in proj.voices if v.name}
     out: List[dict] = []
@@ -198,12 +201,51 @@ def episode_transcript_lines(proj: Project, tr) -> List[dict]:
             a, b = max(u.start, seg.start), min(u.end, seg.end)
             if b > a:
                 pieces.append((out_start + (a - seg.start), out_start + (b - seg.start)))
-        if not pieces or not u.text.strip():
+        shown = (u.script if prefer_script else u.text) or ""
+        if not pieces or not shown.strip():
             continue
-        out.append({"speaker": names.get(u.source) or u.speaker, "text": u.text,
+        out.append({"speaker": names.get(u.source) or u.speaker, "text": shown,
                     "start": min(p[0] for p in pieces), "end": max(p[1] for p in pieces)})
     out.sort(key=lambda x: x["start"])
     return out
+
+
+def deliver_episode(program_dir, eid: str, mp3, proj: Project, duration: float, transcript_path=None) -> Optional[Path]:
+    """番組に deliver_dir があれば、書き出した MP3 と .listen.json をそこへコピーする。
+
+    deliver_dir がなければ何もせず None。MP3 を先に、json を後に置く（json があれば聴ける合図）。
+    """
+    from datetime import timezone
+    from .transcribe import Transcript
+
+    program_dir = Path(program_dir)
+    prog = load_program(program_dir)
+    raw = (prog.get("deliver_dir") or "").strip()
+    if not raw:
+        return None
+    dest = Path(raw).expanduser()
+    dest.mkdir(parents=True, exist_ok=True)
+    name = prog.get("name") or program_dir.name
+    date = _date_text(eid)
+    stem = f"{name}_{date}"
+    tp = Path(transcript_path) if transcript_path else None
+    lines = episode_transcript_lines(proj, Transcript.load(tp), prefer_script=True) if tp and tp.is_file() else []
+    colors = ["#6AA7FF", "#F2A65A", "#7BD88F", "#E58AE0"]
+    meta = {
+        "format": "podlisten", "version": 1, "program": name, "episode": eid, "date": date,
+        "members": [m["name"] for m in prog.get("members", [])],
+        "speakers": {v.name: colors[i % len(colors)] for i, v in enumerate(proj.voices) if v.name},
+        "duration": float(duration), "audio": f"{stem}.mp3",
+        "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "lines": lines,
+    }
+    tmp = dest / f".{stem}.mp3.tmp"
+    shutil.copyfile(mp3, tmp)
+    os.replace(tmp, dest / f"{stem}.mp3")
+    tmp = dest / f".{stem}.listen.json.tmp"
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, dest / f"{stem}.listen.json")
+    return dest / f"{stem}.mp3"
 
 
 def _date_text(eid: str) -> str:

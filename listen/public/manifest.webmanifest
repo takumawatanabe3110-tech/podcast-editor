@@ -1,0 +1,13 @@
+{
+  "name": "試聴（ポッドキャスト完成版）",
+  "short_name": "試聴",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0A0914",
+  "theme_color": "#0A0914",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

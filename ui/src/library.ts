@@ -11,7 +11,7 @@ async function json<T>(r: Response): Promise<T> {
 export interface Member { name: string; role: 'mc' | 'guest' | string; voiceprint?: string | null; enrolled?: boolean }
 export interface Program {
   format?: string; version?: number
-  name: string; preset?: string | null
+  name: string; preset?: string | null; deliver_dir?: string | null
   bgm?: Record<string, string>
   members?: Member[]
 }
