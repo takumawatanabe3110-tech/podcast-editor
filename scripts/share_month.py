@@ -41,6 +41,11 @@ def find_drive_folder(folder_id: str) -> Path | None:
             p = Path(dirpath)
             if folder_id in xattrs(p):
                 return p
+            # ショートカットは .shortcut-targets-by-id/<ID>/ へのリンクとして置かれる（中へは入らないので、ここで見る）
+            for d in dirnames:
+                q = p / d
+                if q.is_symlink() and folder_id in xattrs(q):
+                    return q.resolve()
             # 中身の多い隠しフォルダは見ない
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
     return None

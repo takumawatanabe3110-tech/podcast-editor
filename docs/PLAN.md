@@ -449,4 +449,5 @@
 - 「◯月分を共有して」と頼まれたら、その月の完成版 MP3 だけを共有用のフォルダへコピーする（.listen.json は入れない）
 - 共有先：program.json の `share_folder_id`（Google Drive のフォルダ ID）。岡田山ラジオは「07たくま_ラジオ」（1xVMax2dzt578AcsjQkvduDh6PfhQ8FKA）
 - その中に「番組M月分」（例：岡田山ラジオ12月分）を作り、`番組_YYYY-MM-DD.mp3` を入れる。同じ名前は上書き
-- 実装：`scripts/share_month.py`。Drive for desktop のフォルダに付く ID（拡張属性）で共有先を探す。他の人のフォルダは「ドライブにショートカットを追加」しておく必要がある
+- 実装：`scripts/share_month.py`。Drive for desktop のフォルダに付く ID（拡張属性）で共有先を探す（ショートカットは `.shortcut-targets-by-id/<ID>/` へのリンク）。他の人のフォルダは「ドライブにショートカットを追加」しておく必要がある
+- 2026-11-28：12月分（12/4・12/11・12/18）を「岡田山ラジオ12月分」へコピー済み
